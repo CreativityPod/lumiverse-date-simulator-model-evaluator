@@ -149,7 +149,7 @@ const QUICK_TESTS = [
       { id: "cw-length", type: "word_range", label: "Requested length is respected", minimum: 180, maximum: 220, severity: "minor" },
       { id: "cw-required", type: "required_all", label: "Required causal objects appear", terms: ["copper key", "rain", "greenhouse"], severity: "major" },
       { id: "cw-no-meta", type: "absent", label: "No writing-task meta commentary", pattern: "here(?:'s| is) (?:the|a)|i hope|as requested", severity: "major" },
-      { id: "cw-ending", type: "ends_with", label: "The scene stops at the door opening", pattern: "(?:door|lock)[^.!?]{0,100}(?:opens|open)[.!?…\"”']*$|(?:opens|open)[.!?…\"”']*$", flags: "i", severity: "minor" },
+      { id: "cw-ending", type: "ends_with", label: "The scene stops at the door opening", pattern: "(?:door|lock)[^.!?\\n]{0,120}(?:opens?|swings?\\s+(?:open|inward)|gives?\\s+way|yields?)[^.!?\\n]{0,100}[.!?…\"”']*$", flags: "i", severity: "minor" },
     ],
     judgeDimensions: ["prompt_fidelity", "coherence", "prose_clarity", "pacing", "sensory_detail", "ending_control"],
   }),
