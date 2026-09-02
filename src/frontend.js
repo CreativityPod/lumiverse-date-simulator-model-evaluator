@@ -1,0 +1,845 @@
+export const EVALUATOR_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/><path d="M2 19h22"/></svg>';
+
+const READINESS_LABELS = {
+  ready: "Ready for Date Simulator",
+  partially_compatible: "Partially compatible",
+  not_ready_numbered_questions: "Not ready: numbered questions",
+  not_ready_private_profile: "Not ready: private profile",
+  not_ready_critical: "Not ready: critical failure",
+};
+
+const GATE_LABELS = {
+  numbered_questions: "Numbered questions",
+  number_locality: "Number-only locality",
+  private_profile: "Private profile",
+  routine_discipline: "Routine format",
+  user_agency: "User agency",
+  age_safety: "Adult/Teen safety",
+  continuity: "Basic continuity",
+};
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(label, className = "") {
+  const node = element("button", `dme-button ${className}`.trim(), label);
+  node.type = "button";
+  return node;
+}
+
+function field(label, hint = "") {
+  const wrapper = element("label", "dme-field");
+  const title = element("span", "dme-label", label);
+  const slot = element("div", "dme-control-slot");
+  wrapper.append(title, slot);
+  if (hint) wrapper.appendChild(element("span", "dme-hint", hint));
+  return { wrapper, slot };
+}
+
+function select(options, value = "") {
+  const node = element("select", "dme-input");
+  for (const option of options) {
+    const item = element("option", "", option.label);
+    item.value = option.value;
+    node.appendChild(item);
+  }
+  node.value = value;
+  return node;
+}
+
+function input(type, value, attributes = {}) {
+  const node = element("input", "dme-input");
+  node.type = type;
+  node.value = String(value ?? "");
+  for (const [key, item] of Object.entries(attributes)) node.setAttribute(key, String(item));
+  return node;
+}
+
+export function readinessPresentation(aggregate) {
+  const readiness = aggregate?.readiness ?? "partially_compatible";
+  return {
+    code: readiness,
+    label: READINESS_LABELS[readiness] ?? "Compatibility unknown",
+    state: readiness === "ready" ? "pass" : readiness === "partially_compatible" ? "inconclusive" : "fail",
+  };
+}
+
+export function scoreBand(value) {
+  if (value == null || value === "" || !Number.isFinite(Number(value))) return { label: "Not scored", state: "inconclusive" };
+  const score = Number(value);
+  if (score >= 85) return { label: "Excellent", state: "pass" };
+  if (score >= 70) return { label: "Strong", state: "pass" };
+  if (score >= 55) return { label: "Mixed", state: "inconclusive" };
+  return { label: "Weak", state: "fail" };
+}
+
+export function formatDuration(milliseconds) {
+  const seconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
+}
+
+function scoreValue(family) {
+  return family?.subjectiveScore ?? family?.objectiveScore ?? null;
+}
+
+function createBar(label, value, note = "") {
+  const row = element("div", "dme-bar-row");
+  const head = element("div", "dme-bar-head");
+  head.append(element("span", "", label), element("strong", "", value == null ? "—" : `${Math.round(value)}`));
+  const track = element("div", "dme-bar-track");
+  const fill = element("div", "dme-bar-fill");
+  fill.style.width = `${Math.max(0, Math.min(100, Number(value) || 0))}%`;
+  track.appendChild(fill);
+  row.append(head, track);
+  if (note) row.appendChild(element("div", "dme-hint", note));
+  return row;
+}
+
+function reliabilityStrip(run, family, label) {
+  const values = (run.results ?? [])
+    .filter((result) => result.family === family && Number.isFinite(result.score?.score))
+    .map((result) => Number(result.score.score))
+    .sort((a, b) => a - b);
+  const row = element("div", "dme-reliability-row");
+  const head = element("div", "dme-bar-head");
+  if (!values.length) {
+    head.append(element("span", "", label), element("span", "dme-hint", "No completed samples"));
+    row.appendChild(head);
+    return row;
+  }
+  const middle = Math.floor(values.length / 2);
+  const median = values.length % 2 ? values[middle] : Math.round((values[middle - 1] + values[middle]) / 2);
+  head.append(element("span", "", label), element("span", "dme-hint", `${values.length} samples · median ${median} · range ${values[0]}–${values.at(-1)}`));
+  const strip = element("div", "dme-dot-strip");
+  for (const value of values) {
+    const dot = element("span", "dme-dot");
+    dot.style.left = `${value}%`;
+    dot.title = `${label}: ${value}`;
+    dot.setAttribute("aria-label", `${label} score ${value}`);
+    strip.appendChild(dot);
+  }
+  row.append(head, strip);
+  return row;
+}
+
+function verdictBadge(verdict, label = "") {
+  const icons = { pass: "✓", fail: "!", inconclusive: "?", not_applicable: "–" };
+  return element("span", `dme-verdict dme-${verdict}`, `${icons[verdict] ?? "?"} ${label || verdict}`);
+}
+
+function downloadJson(name, value) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function reportEnvironment(run) {
+  const grid = element("dl", "dme-env-grid");
+  const values = [
+    ["Connection", run.target.connectionName || run.target.connectionId],
+    ["Provider", run.target.provider],
+    ["Model", run.target.model],
+    ["Suite", `${run.suite.name} · ${run.suite.repetitions} repetition${run.suite.repetitions === 1 ? "" : "s"}`],
+    ["Temperature", String(run.target.temperature)],
+    ["Maximum output", `${run.target.maxTokens} tokens`],
+    ["Reasoning", run.target.reasoning],
+    ["Snapshot", run.snapshot.snapshotVersion],
+    ["Snapshot fingerprint", run.snapshot.fingerprint],
+    ["Source SHA-256", run.snapshot.sourceSha256],
+    ["Judge", run.judge?.enabled ? `${run.judge.provider} / ${run.judge.model} · ${run.judge.status}` : "Deterministic only"],
+    ["Duration", formatDuration(run.durationMs)],
+    ["Tokens", `${run.usage?.inputTokens ?? 0} in · ${run.usage?.outputTokens ?? 0} out`],
+  ];
+  for (const [label, value] of values) {
+    grid.append(element("dt", "", label), element("dd", "", value || "—"));
+  }
+  return grid;
+}
+
+function overviewReport(run) {
+  const root = element("div", "dme-report-view");
+  const aggregate = run.aggregate ?? {};
+  const readiness = readinessPresentation(aggregate);
+  const hero = element("section", `dme-report-hero dme-report-${readiness.state}`);
+  hero.append(
+    verdictBadge(readiness.state, readiness.label),
+    element("p", "", `Completed ${aggregate.completedTests ?? 0} target calls with ${aggregate.runtimeErrors ?? 0} provider/runtime errors.`),
+  );
+
+  const scoreGrid = element("section", "dme-score-grid");
+  for (const [family, label] of [["date_simulator", "Date Simulator"], ["roleplay", "Roleplay"], ["writing", "Creative writing"]]) {
+    const data = aggregate.families?.[family] ?? {};
+    const value = scoreValue(data);
+    const band = scoreBand(value);
+    const card = element("article", "dme-score-card");
+    card.append(
+      element("span", "dme-score-label", label),
+      element("strong", "dme-score-number", value == null ? "—" : `${value}`),
+      element("span", `dme-score-band dme-${band.state}`, band.label),
+      element("span", "dme-hint", data.subjectiveScore != null ? "Independent judge score" : "Objective checks only"),
+    );
+    scoreGrid.appendChild(card);
+  }
+
+  const gates = element("section", "dme-report-section");
+  gates.appendChild(element("h3", "", "Date Simulator readiness gates"));
+  const gateGrid = element("div", "dme-gate-grid");
+  for (const [key, label] of Object.entries(GATE_LABELS)) {
+    const verdict = aggregate.gates?.[key] ?? "inconclusive";
+    const row = element("div", "dme-gate");
+    row.append(verdictBadge(verdict), element("span", "", label));
+    gateGrid.appendChild(row);
+  }
+  gates.appendChild(gateGrid);
+
+  const profiles = element("section", "dme-report-section");
+  profiles.appendChild(element("h3", "", "Capability profile"));
+  profiles.append(
+    createBar("Date Simulator objective", aggregate.families?.date_simulator?.objectiveScore, "Protocol compliance and deterministic checks"),
+    createBar("Roleplay", scoreValue(aggregate.families?.roleplay), aggregate.families?.roleplay?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
+    createBar("Creative writing", scoreValue(aggregate.families?.writing), aggregate.families?.writing?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
+  );
+  const reliability = element("section", "dme-report-section");
+  reliability.appendChild(element("h3", "", "Reliability across completed fixtures"));
+  reliability.append(
+    reliabilityStrip(run, "date_simulator", "Date Simulator"),
+    reliabilityStrip(run, "roleplay", "Roleplay objective"),
+    reliabilityStrip(run, "writing", "Writing objective"),
+  );
+  root.append(hero, scoreGrid, gates, profiles, reliability);
+  return root;
+}
+
+function evidenceReport(run, family) {
+  const root = element("div", "dme-report-view");
+  const results = (run.results ?? []).filter((result) => result.family === family);
+  if (!results.length) {
+    root.appendChild(element("p", "dme-empty", "No results are available for this section."));
+    return root;
+  }
+  for (const result of results) {
+    const details = element("details", "dme-result");
+    const summary = element("summary", "dme-result-summary");
+    const verdict = result.runtime?.status !== "success"
+      ? "inconclusive"
+      : result.score?.passed ? "pass" : "fail";
+    summary.append(
+      verdictBadge(verdict),
+      element("span", "dme-result-title", `${result.testId} · ${result.title}`),
+      element("span", "dme-result-score", result.score?.score == null ? "—" : `${result.score.score}`),
+    );
+    const body = element("div", "dme-result-body");
+    if (result.runtime?.status !== "success") {
+      body.appendChild(element("p", "dme-error", result.runtime?.error || "Provider/runtime error"));
+    }
+    for (const item of result.score?.assertions ?? []) {
+      const finding = element("article", "dme-finding");
+      const heading = element("div", "dme-finding-head");
+      heading.append(verdictBadge(item.verdict), element("strong", "", item.label), element("span", "dme-severity", item.severity));
+      finding.append(heading, element("p", "", item.detail || `${item.source} check`));
+      if (item.evidence) finding.appendChild(element("pre", "dme-evidence", item.evidence));
+      body.appendChild(finding);
+    }
+    const judgeItem = run.judge?.items?.find((item) => item.id === result.resultId);
+    if (judgeItem) {
+      const judge = element("article", "dme-finding dme-judge-finding");
+      judge.append(
+        element("strong", "", `◆ Judge score ${judgeItem.score}`),
+        element("p", "", judgeItem.reason),
+        element("pre", "dme-evidence", judgeItem.evidence),
+      );
+      for (const [dimension, value] of Object.entries(judgeItem.dimensions ?? {})) judge.appendChild(createBar(dimension.replaceAll("_", " "), value));
+      body.appendChild(judge);
+    }
+    const responseDetails = element("details", "dme-raw");
+    responseDetails.append(element("summary", "", "Raw target response"), element("pre", "dme-raw-text", result.response?.content || "No response captured."));
+    body.appendChild(responseDetails);
+    details.append(summary, body);
+    root.appendChild(details);
+  }
+  return root;
+}
+
+function openRunReport(ctx, run) {
+  const modal = ctx.ui.showModal({
+    title: "Model Evaluator report",
+    width: 980,
+    maxHeight: 820,
+    persistent: false,
+  });
+  const shell = element("div", "dme-report");
+  const context = element("header", "dme-report-context");
+  context.append(
+    element("div", "dme-report-model", run.target.model),
+    element("div", "dme-report-subtitle", `${run.target.connectionName || run.target.provider} · ${run.suite.name} · ${new Date(run.startedAt).toLocaleString()}`),
+  );
+  const actions = element("div", "dme-report-actions");
+  const exportSummary = button("Export summary JSON");
+  exportSummary.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-summary.json`, {
+    id: run.id,
+    target: run.target,
+    suite: run.suite,
+    snapshot: run.snapshot,
+    aggregate: run.aggregate,
+    judge: run.judge ? { ...run.judge, items: undefined } : null,
+    durationMs: run.durationMs,
+    usage: run.usage,
+  }));
+  const exportFull = button("Export full evidence");
+  exportFull.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-full.json`, run));
+  actions.append(exportSummary, exportFull);
+  context.appendChild(actions);
+
+  const tabs = element("div", "dme-report-tabs");
+  tabs.setAttribute("role", "tablist");
+  const body = element("div", "dme-report-body");
+  const views = [
+    ["overview", "Overview", () => overviewReport(run)],
+    ["date", "Date Simulator", () => evidenceReport(run, "date_simulator")],
+    ["roleplay", "Roleplay", () => evidenceReport(run, "roleplay")],
+    ["writing", "Writing", () => evidenceReport(run, "writing")],
+    ["environment", "Environment", () => reportEnvironment(run)],
+  ];
+  function activate(id) {
+    for (const tabButton of tabs.children) {
+      const active = tabButton.dataset.tab === id;
+      tabButton.setAttribute("aria-selected", String(active));
+      tabButton.classList.toggle("dme-active", active);
+    }
+    body.replaceChildren(views.find((view) => view[0] === id)[2]());
+  }
+  for (const [id, label] of views) {
+    const tabButton = button(label, "dme-tab");
+    tabButton.dataset.tab = id;
+    tabButton.setAttribute("role", "tab");
+    tabButton.addEventListener("click", () => activate(id));
+    tabs.appendChild(tabButton);
+  }
+  shell.append(context, tabs, body);
+  modal.root.appendChild(shell);
+  activate("overview");
+}
+
+function openComparisonReport(ctx, runs) {
+  const modal = ctx.ui.showModal({ title: "Model comparison", width: 980, maxHeight: 780, persistent: false });
+  const root = element("div", "dme-report dme-comparison");
+  const comparisonKey = (run) => JSON.stringify({
+    snapshot: run.snapshot?.fingerprint,
+    suite: run.suite?.id,
+    temperature: run.target?.temperature,
+    maxTokens: run.target?.maxTokens,
+    reasoning: run.target?.reasoning,
+    judge: run.judge?.enabled ? `${run.judge.model}:${run.judge.rubricVersion}` : "deterministic",
+  });
+  const baseline = comparisonKey(runs[0] ?? {});
+  const directlyComparable = runs.every((run) => comparisonKey(run) === baseline);
+  root.appendChild(element(
+    "p",
+    directlyComparable ? "dme-report-subtitle" : "dme-comparison-warning",
+    directlyComparable
+      ? "Directly comparable settings and benchmark fingerprints. Readiness gates remain separate from prose scores."
+      : "Comparison contains different suites, parameters, snapshots, or judges. Rows are shown for inspection but are not directly rank-comparable.",
+  ));
+  const table = element("div", "dme-compare-table");
+  const header = element("div", "dme-compare-row dme-compare-head");
+  for (const label of ["Model", "Readiness", "Date Sim", "Roleplay", "Writing", "Time", "Errors"]) header.appendChild(element("span", "", label));
+  table.appendChild(header);
+  for (const run of runs) {
+    const row = element("div", "dme-compare-row");
+    const readiness = readinessPresentation(run.aggregate);
+    row.append(
+      element("strong", "", run.target.model),
+      verdictBadge(readiness.state, readiness.label),
+      element("span", "", run.aggregate?.families?.date_simulator?.objectiveScore ?? "—"),
+      element("span", "", scoreValue(run.aggregate?.families?.roleplay) ?? "—"),
+      element("span", "", scoreValue(run.aggregate?.families?.writing) ?? "—"),
+      element("span", "", formatDuration(run.durationMs)),
+      element("span", "", String(run.aggregate?.runtimeErrors ?? 0)),
+    );
+    table.appendChild(row);
+  }
+  root.appendChild(table);
+  modal.root.appendChild(root);
+}
+
+export function setup(ctx) {
+  ctx.deferReady();
+  const cleanups = [];
+  const mounted = [];
+  let connections = [];
+  let queue = [];
+  let history = [];
+  let latestBatch = [];
+  let running = false;
+  let targetModelHandle = null;
+  let judgeModelHandle = null;
+  let pendingReportId = "";
+
+  const removeStyle = ctx.dom.addStyle(`
+    .dme-panel { display:flex; flex-direction:column; gap:14px; padding:14px; color:var(--lumiverse-text); }
+    .dme-hero { padding:16px; border:1px solid color-mix(in srgb,var(--lumiverse-accent,#8c7cf0) 34%,var(--lumiverse-border)); border-radius:14px; background:linear-gradient(135deg,color-mix(in srgb,var(--lumiverse-accent,#8c7cf0) 16%,transparent),transparent); }
+    .dme-hero h2,.dme-section h3,.dme-report-section h3 { margin:0 0 6px; }
+    .dme-hero p,.dme-report-hero p { margin:0; color:var(--lumiverse-text-muted); }
+    .dme-section { display:flex; flex-direction:column; gap:10px; padding:13px; border:1px solid var(--lumiverse-border); border-radius:12px; background:color-mix(in srgb,var(--lumiverse-bg) 92%,var(--lumiverse-text) 2%); }
+    .dme-section-title { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .dme-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .dme-field { display:flex; flex-direction:column; gap:5px; min-width:0; }
+    .dme-label { font-size:.84rem; font-weight:650; }
+    .dme-hint { color:var(--lumiverse-text-muted); font-size:.76rem; line-height:1.35; overflow-wrap:anywhere; }
+    .dme-input { box-sizing:border-box; width:100%; min-height:36px; padding:7px 9px; color:var(--lumiverse-text); background:var(--lumiverse-bg); border:1px solid var(--lumiverse-border); border-radius:8px; }
+    .dme-control-slot { min-height:36px; min-width:0; }
+    .dme-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .dme-button { appearance:none; border:1px solid var(--lumiverse-border); border-radius:8px; padding:8px 11px; background:color-mix(in srgb,var(--lumiverse-bg) 88%,var(--lumiverse-text) 5%); color:var(--lumiverse-text); cursor:pointer; font-weight:600; }
+    .dme-button:hover { border-color:var(--lumiverse-accent,#8c7cf0); }
+    .dme-button:disabled { opacity:.5; cursor:not-allowed; }
+    .dme-primary { color:white; background:var(--lumiverse-accent,#725fe5); border-color:transparent; }
+    .dme-danger { color:var(--lumiverse-danger,#e57979); }
+    .dme-inline-check { display:flex; gap:8px; align-items:flex-start; font-size:.86rem; }
+    .dme-queue,.dme-history { display:flex; flex-direction:column; gap:8px; }
+    .dme-queue-row,.dme-history-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:10px; border:1px solid var(--lumiverse-border); border-radius:9px; }
+    .dme-model-id { font-weight:650; overflow-wrap:anywhere; }
+    .dme-row-meta { color:var(--lumiverse-text-muted); font-size:.76rem; }
+    .dme-icon-button { padding:5px 8px; }
+    .dme-status { min-height:46px; padding:10px; border-radius:9px; background:color-mix(in srgb,var(--lumiverse-accent,#8c7cf0) 10%,transparent); }
+    .dme-progress { height:7px; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--lumiverse-text) 10%,transparent); margin-top:8px; }
+    .dme-progress-fill { height:100%; background:var(--lumiverse-accent,#8c7cf0); transition:width .2s ease; }
+    .dme-error { color:var(--lumiverse-danger,#e57979); }
+    .dme-empty { color:var(--lumiverse-text-muted); font-style:italic; }
+    .dme-report { display:flex; flex-direction:column; min-height:0; color:var(--lumiverse-text); }
+    .dme-report-context { padding:15px 16px 10px; border-bottom:1px solid var(--lumiverse-border); }
+    .dme-report-model { font-size:1.2rem; font-weight:750; overflow-wrap:anywhere; }
+    .dme-report-subtitle { color:var(--lumiverse-text-muted); font-size:.82rem; margin-top:3px; }
+    .dme-report-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+    .dme-report-tabs { display:flex; gap:4px; padding:8px 12px; overflow:auto; border-bottom:1px solid var(--lumiverse-border); }
+    .dme-tab { white-space:nowrap; border-color:transparent; background:transparent; }
+    .dme-tab.dme-active { color:var(--lumiverse-accent,#8c7cf0); border-color:var(--lumiverse-accent,#8c7cf0); }
+    .dme-report-body { padding:14px 16px 22px; overflow:auto; }
+    .dme-report-view { display:flex; flex-direction:column; gap:14px; }
+    .dme-report-hero { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:13px; border:1px solid var(--lumiverse-border); border-radius:10px; }
+    .dme-report-fail { border-color:color-mix(in srgb,var(--lumiverse-danger,#e57979) 55%,var(--lumiverse-border)); }
+    .dme-report-pass { border-color:color-mix(in srgb,var(--lumiverse-success,#70b987) 55%,var(--lumiverse-border)); }
+    .dme-score-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .dme-score-card { display:flex; flex-direction:column; gap:4px; padding:13px; border:1px solid var(--lumiverse-border); border-radius:10px; }
+    .dme-score-label { font-size:.82rem; color:var(--lumiverse-text-muted); }
+    .dme-score-number { font-size:1.8rem; line-height:1; }
+    .dme-score-band { font-size:.8rem; font-weight:650; }
+    .dme-report-section { padding:13px; border:1px solid var(--lumiverse-border); border-radius:10px; }
+    .dme-gate-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .dme-gate { display:flex; align-items:center; gap:8px; }
+    .dme-verdict { display:inline-flex; align-items:center; gap:3px; font-size:.77rem; font-weight:750; white-space:nowrap; }
+    .dme-pass { color:var(--lumiverse-success,#70b987); }.dme-fail { color:var(--lumiverse-danger,#e57979); }.dme-inconclusive { color:var(--lumiverse-warning,#d5a85f); }
+    .dme-bar-row { margin:9px 0; }.dme-bar-head { display:flex; justify-content:space-between; gap:10px; font-size:.83rem; text-transform:capitalize; }
+    .dme-bar-track { height:9px; margin-top:4px; background:color-mix(in srgb,var(--lumiverse-text) 10%,transparent); border-radius:999px; overflow:hidden; }
+    .dme-bar-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--lumiverse-accent,#725fe5),color-mix(in srgb,var(--lumiverse-accent,#725fe5) 55%,#5ac8a7)); }
+    .dme-reliability-row { margin:10px 0; }.dme-dot-strip { position:relative; height:16px; margin:5px 5px 0; border-radius:999px; background:linear-gradient(90deg,color-mix(in srgb,var(--lumiverse-danger,#e57979) 18%,transparent),color-mix(in srgb,var(--lumiverse-warning,#d5a85f) 18%,transparent),color-mix(in srgb,var(--lumiverse-success,#70b987) 18%,transparent)); }.dme-dot { position:absolute; top:3px; width:10px; height:10px; border:2px solid var(--lumiverse-bg); border-radius:50%; background:var(--lumiverse-accent,#725fe5); transform:translateX(-50%); }
+    .dme-result { border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }
+    .dme-result-summary { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:9px; align-items:center; padding:11px; cursor:pointer; }
+    .dme-result-title { overflow-wrap:anywhere; }.dme-result-score { font-weight:750; }
+    .dme-result-body { display:flex; flex-direction:column; gap:9px; padding:0 11px 12px; }
+    .dme-finding { padding:10px; border-radius:8px; background:color-mix(in srgb,var(--lumiverse-text) 4%,transparent); }
+    .dme-finding p { margin:6px 0; }.dme-finding-head { display:flex; flex-wrap:wrap; gap:7px; align-items:center; }.dme-severity { color:var(--lumiverse-text-muted); font-size:.72rem; text-transform:uppercase; }
+    .dme-evidence,.dme-raw-text { white-space:pre-wrap; overflow-wrap:anywhere; max-height:300px; overflow:auto; padding:9px; border-radius:7px; background:color-mix(in srgb,var(--lumiverse-bg) 88%,black 5%); font-size:.77rem; }
+    .dme-judge-finding { border-left:3px solid var(--lumiverse-accent,#725fe5); }
+    .dme-raw summary { cursor:pointer; color:var(--lumiverse-text-muted); }
+    .dme-env-grid { display:grid; grid-template-columns:minmax(130px,.35fr) minmax(0,1fr); gap:8px 14px; margin:0; }.dme-env-grid dt { color:var(--lumiverse-text-muted); }.dme-env-grid dd { margin:0; overflow-wrap:anywhere; }
+    .dme-compare-table { display:flex; flex-direction:column; border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }.dme-compare-row { display:grid; grid-template-columns:minmax(150px,1.5fr) minmax(150px,1.4fr) repeat(3,.55fr) .7fr .4fr; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--lumiverse-border); }.dme-compare-row:last-child { border-bottom:0; }.dme-compare-head { color:var(--lumiverse-text-muted); font-size:.75rem; font-weight:700; }
+    .dme-comparison-warning { padding:10px; color:var(--lumiverse-warning,#d5a85f); border:1px solid currentColor; border-radius:8px; }
+    @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
+    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}}
+  `);
+  cleanups.push(removeStyle);
+
+  const tab = ctx.ui.registerDrawerTab({
+    id: "model-evaluator",
+    title: "Date Simulator Model Evaluator",
+    shortName: "Evaluator",
+    headerTitle: "Model Evaluator",
+    description: "Run unattended Date Simulator, roleplay, and writing benchmarks",
+    keywords: ["model", "benchmark", "date simulator", "roleplay", "writing"],
+    iconSvg: EVALUATOR_ICON_SVG,
+  });
+  cleanups.push(() => tab.destroy());
+
+  const panel = element("div", "dme-panel");
+  const hero = element("section", "dme-hero");
+  hero.append(element("h2", "", "Headless model benchmark"), element("p", "", "Select any saved connection and model. Runs stay outside chat and do not change Connect."));
+
+  const targetSection = element("section", "dme-section");
+  const targetTitle = element("div", "dme-section-title");
+  targetTitle.append(element("h3", "", "Target model"));
+  const refreshButton = button("Refresh");
+  targetTitle.appendChild(refreshButton);
+  const targetGrid = element("div", "dme-grid");
+  const connectionField = field("Connection", "Supplies provider, URL, and stored credentials.");
+  const modelField = field("Model", "Request-local override; the Connect tab is untouched.");
+  const suiteField = field("Suite");
+  const temperatureField = field("Temperature");
+  const maxTokensField = field("Maximum output tokens");
+  const reasoningField = field("Reasoning override");
+  const targetConnection = select([], "");
+  const suiteSelect = select([
+    { value: "quick", label: "Quick · 7 calls" },
+    { value: "standard", label: "Standard · 24 calls" },
+    { value: "full", label: "Full · 54 calls" },
+  ], "quick");
+  const temperatureInput = input("number", 0.8, { min: 0, max: 2, step: 0.1 });
+  const maxTokensInput = input("number", 2000, { min: 400, max: 8000, step: 100 });
+  const reasoningSelect = select([
+    { value: "inherit", label: "Inherit connection" },
+    { value: "off", label: "Off" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ], "inherit");
+  connectionField.slot.appendChild(targetConnection);
+  suiteField.slot.appendChild(suiteSelect);
+  temperatureField.slot.appendChild(temperatureInput);
+  maxTokensField.slot.appendChild(maxTokensInput);
+  reasoningField.slot.appendChild(reasoningSelect);
+  targetGrid.append(connectionField.wrapper, modelField.wrapper, suiteField.wrapper, temperatureField.wrapper, maxTokensField.wrapper, reasoningField.wrapper);
+  const targetActions = element("div", "dme-actions");
+  const runNowButton = button("Run now", "dme-primary");
+  const addButton = button("Add model");
+  targetActions.append(runNowButton, addButton);
+  targetSection.append(targetTitle, targetGrid, targetActions);
+
+  const judgeDetails = element("details", "dme-section");
+  const judgeSummary = element("summary", "dme-section-title");
+  judgeSummary.appendChild(element("strong", "", "Optional independent judge"));
+  judgeDetails.appendChild(judgeSummary);
+  const judgeEnabledLabel = element("label", "dme-inline-check");
+  const judgeEnabled = input("checkbox", "");
+  judgeEnabled.checked = false;
+  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Score roleplay and writing with a separate model. Deterministic Date Simulator gates never depend on it."));
+  const judgeGrid = element("div", "dme-grid");
+  const judgeConnectionField = field("Judge connection");
+  const judgeModelField = field("Judge model");
+  const judgeConnection = select([], "");
+  judgeConnectionField.slot.appendChild(judgeConnection);
+  const officialLabel = element("label", "dme-inline-check");
+  const officialJudge = input("checkbox", "");
+  officialJudge.checked = true;
+  officialLabel.append(officialJudge, element("span", "", "Official mode: prevent a target from judging itself."));
+  judgeGrid.append(judgeConnectionField.wrapper, judgeModelField.wrapper);
+  judgeDetails.append(judgeEnabledLabel, judgeGrid, officialLabel);
+
+  const queueSection = element("section", "dme-section");
+  const queueTitle = element("div", "dme-section-title");
+  queueTitle.append(element("h3", "", "Comparison queue"));
+  const queueCount = element("span", "dme-hint", "0 models");
+  queueTitle.appendChild(queueCount);
+  const queueList = element("div", "dme-queue");
+  const queueActions = element("div", "dme-actions");
+  const runSelectedButton = button("Run selected", "dme-primary");
+  const clearButton = button("Clear");
+  queueActions.append(runSelectedButton, clearButton);
+  queueSection.append(queueTitle, queueList, queueActions);
+
+  const runSection = element("section", "dme-section");
+  const runTitle = element("h3", "", "Run status");
+  const runStatus = element("div", "dme-status", "Idle. Choose a model or build a comparison queue.");
+  const progress = element("div", "dme-progress");
+  const progressFill = element("div", "dme-progress-fill");
+  progressFill.style.width = "0%";
+  progress.appendChild(progressFill);
+  runStatus.appendChild(progress);
+  const stopButton = button("Stop", "dme-danger");
+  stopButton.disabled = true;
+  runSection.append(runTitle, runStatus, stopButton);
+
+  const historySection = element("section", "dme-section");
+  const historyTitle = element("div", "dme-section-title");
+  historyTitle.append(element("h3", "", "Recent reports"));
+  const compareButton = button("Compare last batch");
+  compareButton.disabled = true;
+  historyTitle.appendChild(compareButton);
+  const historyList = element("div", "dme-history");
+  historySection.append(historyTitle, historyList);
+
+  panel.append(hero, targetSection, judgeDetails, queueSection, runSection, historySection);
+  tab.root.appendChild(panel);
+
+  function selectedConnection(selectNode) {
+    return connections.find((connection) => connection.id === selectNode.value) ?? null;
+  }
+
+  function mountModel(slot, connection, currentValue, onChange, existing) {
+    try { existing?.destroy(); } catch { /* best effort */ }
+    slot.replaceChildren();
+    if (typeof ctx.components?.mountModelCombobox === "function" && connection?.id) {
+      const handle = ctx.components.mountModelCombobox(slot, {
+        value: currentValue || connection.model || "",
+        connection: { kind: "llm", id: connection.id },
+        appearance: "standard",
+        placeholder: "Choose or type a model ID",
+        emptyMessage: "No model catalog; type a model ID",
+        browseHint: "Models from this saved connection",
+        onChange,
+      });
+      mounted.push(handle);
+      return handle;
+    }
+    const fallback = input("text", currentValue || connection?.model || "", { placeholder: "Model ID" });
+    fallback.addEventListener("input", () => onChange(fallback.value));
+    slot.appendChild(fallback);
+    return {
+      getValue: () => fallback.value,
+      update: ({ value }) => { if (value !== undefined) fallback.value = value; },
+      destroy: () => fallback.remove(),
+    };
+  }
+
+  function remountTargetModel(value = "") {
+    targetModelHandle = mountModel(modelField.slot, selectedConnection(targetConnection), value, () => saveConfig(), targetModelHandle);
+  }
+
+  function remountJudgeModel(value = "") {
+    judgeModelHandle = mountModel(judgeModelField.slot, selectedConnection(judgeConnection), value, () => saveConfig(), judgeModelHandle);
+  }
+
+  function modelValue(handle) {
+    return String(handle?.getValue?.() ?? "").trim();
+  }
+
+  function currentTarget() {
+    const connection = selectedConnection(targetConnection);
+    return {
+      connectionId: connection?.id ?? "",
+      connectionName: connection?.name ?? "",
+      provider: connection?.provider ?? "",
+      model: modelValue(targetModelHandle),
+      suite: suiteSelect.value,
+      temperature: Number(temperatureInput.value),
+      maxTokens: Number(maxTokensInput.value),
+      reasoning: reasoningSelect.value,
+    };
+  }
+
+  function currentJudge() {
+    const connection = selectedConnection(judgeConnection);
+    return {
+      enabled: judgeEnabled.checked,
+      official: officialJudge.checked,
+      connectionId: connection?.id ?? "",
+      connectionName: connection?.name ?? "",
+      provider: connection?.provider ?? "",
+      model: modelValue(judgeModelHandle),
+      reasoning: "low",
+      maxTokens: 2400,
+    };
+  }
+
+  function saveConfig() {
+    ctx.sendToBackend({
+      type: "evaluator_save_config",
+      config: { target: currentTarget(), judge: currentJudge(), queue },
+    });
+  }
+
+  function renderConnections(savedConfig = null) {
+    const targetPrevious = savedConfig?.target?.connectionId || targetConnection.value;
+    const judgePrevious = savedConfig?.judge?.connectionId || judgeConnection.value;
+    const options = connections.map((connection) => ({
+      value: connection.id,
+      label: `${connection.name}${connection.isDefault ? " · default" : ""} (${connection.provider})`,
+    }));
+    for (const node of [targetConnection, judgeConnection]) node.replaceChildren();
+    if (!options.length) {
+      for (const node of [targetConnection, judgeConnection]) {
+        const option = element("option", "", "No connection profiles available");
+        option.value = "";
+        node.appendChild(option);
+      }
+    } else {
+      for (const node of [targetConnection, judgeConnection]) {
+        for (const option of options) {
+          const item = element("option", "", option.label);
+          item.value = option.value;
+          node.appendChild(item);
+        }
+      }
+    }
+    const fallbackId = connections.find((item) => item.isDefault)?.id ?? connections[0]?.id ?? "";
+    targetConnection.value = connections.some((item) => item.id === targetPrevious) ? targetPrevious : fallbackId;
+    judgeConnection.value = connections.some((item) => item.id === judgePrevious) ? judgePrevious : fallbackId;
+    remountTargetModel(savedConfig?.target?.model || selectedConnection(targetConnection)?.model || "");
+    remountJudgeModel(savedConfig?.judge?.model || selectedConnection(judgeConnection)?.model || "");
+  }
+
+  function renderQueue() {
+    queueList.replaceChildren();
+    queueCount.textContent = `${queue.length} model${queue.length === 1 ? "" : "s"}`;
+    runSelectedButton.disabled = running || queue.length === 0;
+    clearButton.disabled = running || queue.length === 0;
+    if (!queue.length) queueList.appendChild(element("div", "dme-empty", "No queued models. “Run now” does not require a queue."));
+    queue.forEach((item, index) => {
+      const row = element("div", "dme-queue-row");
+      const copy = element("div", "");
+      copy.append(element("div", "dme-model-id", item.model), element("div", "dme-row-meta", `${item.connectionName} · ${item.suite} · T ${item.temperature} · ${item.reasoning}`));
+      const remove = button("Remove", "dme-icon-button");
+      remove.disabled = running;
+      remove.addEventListener("click", () => {
+        queue.splice(index, 1);
+        renderQueue();
+        saveConfig();
+      });
+      row.append(copy, remove);
+      queueList.appendChild(row);
+    });
+  }
+
+  function renderHistory() {
+    historyList.replaceChildren();
+    if (!history.length) historyList.appendChild(element("div", "dme-empty", "Completed reports will appear here."));
+    for (const run of history.slice(0, 20)) {
+      const row = element("div", "dme-history-row");
+      const copy = element("div", "");
+      const readiness = readinessPresentation(run.aggregate);
+      copy.append(
+        element("div", "dme-model-id", run.target?.model || "Unknown model"),
+        element("div", "dme-row-meta", `${READINESS_LABELS[run.aggregate?.readiness] ?? run.status} · ${run.suite?.name ?? run.suite?.id} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : "queued"}`),
+      );
+      const open = button("Open report", "dme-icon-button");
+      open.addEventListener("click", () => {
+        pendingReportId = run.id;
+        open.disabled = true;
+        open.textContent = "Loading…";
+        ctx.sendToBackend({ type: "evaluator_get_run", id: run.id });
+      });
+      row.append(copy, open);
+      historyList.appendChild(row);
+    }
+  }
+
+  function setRunning(value) {
+    running = value;
+    runNowButton.disabled = value;
+    addButton.disabled = value;
+    stopButton.disabled = !value;
+    renderQueue();
+  }
+
+  function setStatus(text, percent = null, error = false) {
+    runStatus.firstChild && runStatus.removeChild(runStatus.firstChild);
+    runStatus.insertBefore(element("div", error ? "dme-error" : "", text), progress);
+    if (percent != null) progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  }
+
+  function launch(items) {
+    const valid = items.filter((item) => item.connectionId && item.model);
+    if (!valid.length) {
+      setStatus("Choose a saved connection and enter a model ID first.", 0, true);
+      return;
+    }
+    latestBatch = [];
+    compareButton.disabled = true;
+    setRunning(true);
+    setStatus("Starting unattended benchmark queue…", 0);
+    ctx.sendToBackend({ type: "evaluator_run_queue", queue: valid, judge: currentJudge(), timeoutMs: 180000 });
+  }
+
+  targetConnection.addEventListener("change", () => { remountTargetModel(selectedConnection(targetConnection)?.model || ""); saveConfig(); });
+  judgeConnection.addEventListener("change", () => { remountJudgeModel(selectedConnection(judgeConnection)?.model || ""); saveConfig(); });
+  for (const node of [suiteSelect, temperatureInput, maxTokensInput, reasoningSelect, judgeEnabled, officialJudge]) node.addEventListener("change", saveConfig);
+  refreshButton.addEventListener("click", () => ctx.sendToBackend({ type: "evaluator_refresh_connections" }));
+  addButton.addEventListener("click", () => {
+    const target = currentTarget();
+    if (!target.connectionId || !target.model) return setStatus("Choose a connection and model before adding it.", 0, true);
+    queue.push(target);
+    renderQueue();
+    saveConfig();
+  });
+  runNowButton.addEventListener("click", () => launch([currentTarget()]));
+  runSelectedButton.addEventListener("click", () => launch(queue));
+  clearButton.addEventListener("click", () => { queue = []; renderQueue(); saveConfig(); });
+  stopButton.addEventListener("click", () => { stopButton.disabled = true; setStatus("Stopping after the current provider abort is acknowledged…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
+  compareButton.addEventListener("click", () => { if (latestBatch.length) openComparisonReport(ctx, latestBatch); });
+
+  cleanups.push(tab.onActivate(() => ctx.sendToBackend({ type: "evaluator_bootstrap_request" })));
+  cleanups.push(ctx.onBackendMessage((payload) => {
+    if (payload?.type === "evaluator_bootstrap") {
+      connections = Array.isArray(payload.connections) ? payload.connections : [];
+      history = Array.isArray(payload.history) ? payload.history : [];
+      const saved = payload.config && typeof payload.config === "object" ? payload.config : null;
+      if (saved?.target) {
+        suiteSelect.value = saved.target.suite || "quick";
+        temperatureInput.value = saved.target.temperature ?? 0.8;
+        maxTokensInput.value = saved.target.maxTokens ?? 2000;
+        reasoningSelect.value = saved.target.reasoning || "inherit";
+      }
+      if (saved?.judge) {
+        judgeEnabled.checked = saved.judge.enabled === true;
+        officialJudge.checked = saved.judge.official !== false;
+      }
+      if (!queue.length && Array.isArray(saved?.queue)) queue = saved.queue;
+      renderConnections(saved);
+      renderQueue();
+      renderHistory();
+      if (payload.error) setStatus(`Connection catalog error: ${payload.error}`, 0, true);
+      else if (!connections.length) setStatus("No saved LLM connections are available. Add one in Connect, then refresh.", 0, true);
+    }
+    if (payload?.type === "evaluator_queue_started") {
+      setRunning(true);
+      setStatus(`Queue started: ${payload.totalModels} model${payload.totalModels === 1 ? "" : "s"}.`, 0);
+    }
+    if (payload?.type === "evaluator_run_started") {
+      setStatus(`Model ${payload.queueIndex + 1} of ${payload.totalModels}: ${payload.run.target.model}`, 0);
+    }
+    if (payload?.type === "evaluator_progress") {
+      const local = payload.total ? payload.current / payload.total : 0;
+      const overall = ((payload.queueIndex ?? 0) + local) / Math.max(1, payload.totalModels ?? 1);
+      setStatus(`${payload.model} · ${payload.phase === "judge" ? "Judge" : `Test ${payload.current}/${payload.total}`} · ${payload.label}`, overall * 100);
+    }
+    if (payload?.type === "evaluator_run_complete") {
+      latestBatch.push(payload.run);
+      history = [payload.run, ...history.filter((item) => item.id !== payload.run.id)];
+      renderHistory();
+    }
+    if (payload?.type === "evaluator_model_rejected") setStatus(payload.message, 0, true);
+    if (payload?.type === "evaluator_queue_complete") {
+      setRunning(false);
+      compareButton.disabled = latestBatch.length < 2;
+      setStatus(payload.stopped ? `Stopped. ${latestBatch.length} completed report${latestBatch.length === 1 ? "" : "s"} saved.` : `Complete. ${latestBatch.length} report${latestBatch.length === 1 ? "" : "s"} saved.`, 100);
+      if (latestBatch.length === 1) openRunReport(ctx, latestBatch[0]);
+      else if (latestBatch.length > 1) openComparisonReport(ctx, latestBatch);
+    }
+    if (payload?.type === "evaluator_run_detail" && payload.run) {
+      pendingReportId = "";
+      openRunReport(ctx, payload.run);
+      renderHistory();
+    }
+    if (payload?.type === "evaluator_error") {
+      setRunning(false);
+      pendingReportId = "";
+      setStatus(payload.message || "The evaluator encountered an error.", 0, true);
+      renderHistory();
+    }
+  }));
+
+  ctx.ready();
+  renderQueue();
+  renderHistory();
+  ctx.sendToBackend({ type: "evaluator_bootstrap_request" });
+
+  return () => {
+    try { targetModelHandle?.destroy(); } catch { /* best effort */ }
+    try { judgeModelHandle?.destroy(); } catch { /* best effort */ }
+    for (const handle of mounted.reverse()) {
+      try { handle.destroy(); } catch { /* best effort */ }
+    }
+    for (const cleanup of cleanups.reverse()) {
+      try { cleanup(); } catch { /* best effort */ }
+    }
+    ctx.dom.cleanup();
+  };
+}

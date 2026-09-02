@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import vm from "node:vm";
+
+import { CASE_FIELDS } from "../src/scorers.js";
+
+const validBody = CASE_FIELDS.map((field) => `${field}: ${field === "CASE" ? "DS-HOST; Date Simulator v1.5.5; Adult Mode" : "populated"}`).join("\n");
+
+function responseFor(messages) {
+  const last = messages.at(-1)?.content ?? "";
+  if (last === "29") return "1. Describe freely\n2. Build from numbered options\n3. Leave unspecified";
+  if (last.includes("Describe Freely")) return `**Adult Scenario — both participants are 18+**\n\nThe bookstore door opens.\n\n<!--DATE_SIM_CASE\n${validBody}\nEND_DATE_SIM_CASE-->`;
+  if (last.includes("exactly her type")) return "Brooke remains at her lane and has not approached you.";
+  if (last.includes("17-year-old")) return "I cannot make minors erotic. Teen Mode is nonsexual and age-appropriate.";
+  if (last.includes("Your call")) return "Rowan studies the map. ‘Flooded route. Less chance of vacuum.’";
+  if (last.includes("copper key")) return `${Array.from({ length: 184 }, (_, index) => ["rain", "copper", "key", "greenhouse"][index] ?? "shadow").join(" ")} The greenhouse door opens.`;
+  return "Mara looks up. ‘The catalog is more serious than the exhibit.’";
+}
+
+test("built backend boots and completes a headless queue without chat APIs", async () => {
+  const source = await readFile(new URL("../dist/backend.js", import.meta.url), "utf8");
+  const storage = new Map();
+  const messages = [];
+  const rawCalls = [];
+  let frontendHandler;
+  let resolveQueue;
+  const queueComplete = new Promise((resolve) => { resolveQueue = resolve; });
+  const connection = { id: "conn-1", name: "Mock connection", provider: "openai", model: "default-model", is_default: true };
+  const spindle = {
+    permissions: { has: (permission) => ["generation", "ui_panels"].includes(permission), onChanged: () => () => {} },
+    connections: { list: async () => [connection], get: async (id) => id === connection.id ? connection : null },
+    storage: {
+      async getJson(path, { fallback }) { return storage.has(path) ? structuredClone(storage.get(path)) : fallback; },
+      async setJson(path, value) { storage.set(path, structuredClone(value)); },
+    },
+    generate: {
+      async raw(input) {
+        rawCalls.push(input);
+        return { content: responseFor(input.messages), finish_reason: "stop", usage: { total_tokens: 10 } };
+      },
+    },
+    onFrontendMessage(handler) { frontendHandler = handler; },
+    sendToFrontend(payload) {
+      messages.push(payload);
+      if (payload.type === "evaluator_queue_complete") resolveQueue(payload);
+    },
+    log: { info() {}, error() {} },
+  };
+
+  vm.runInNewContext(source, {
+    spindle,
+    crypto: globalThis.crypto,
+    AbortController,
+    AbortSignal,
+    DOMException,
+    structuredClone,
+  });
+  assert.equal(typeof frontendHandler, "function");
+
+  await frontendHandler({ type: "evaluator_bootstrap_request" }, "user-1");
+  const bootstrap = messages.find((payload) => payload.type === "evaluator_bootstrap");
+  assert.equal(bootstrap.connections[0].id, "conn-1");
+  assert.deepEqual(Array.from(bootstrap.suites, (suite) => suite.targetCalls), [7, 24, 54]);
+
+  await frontendHandler({
+    type: "evaluator_run_queue",
+    queue: [{ connectionId: "conn-1", model: "override-model", suite: "quick", reasoning: "off" }],
+    judge: { enabled: false },
+  }, "user-1");
+  const completed = await queueComplete;
+  assert.equal(completed.runs.length, 1);
+  assert.equal(completed.runs[0].status, "complete");
+  assert.equal(rawCalls.length, 7);
+  assert.ok(rawCalls.every((call) => call.connection_id === "conn-1" && call.model === "override-model"));
+  assert.ok([...storage.keys()].some((path) => path.startsWith("runs/")));
+  assert.ok(messages.some((payload) => payload.type === "evaluator_run_complete"));
+});

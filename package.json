@@ -1,0 +1,12 @@
+{
+  "name": "date-simulator-model-evaluator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "snapshot": "node scripts/build-snapshot.mjs",
+    "build": "node scripts/build-snapshot.mjs && node scripts/build.mjs",
+    "test": "node --test",
+    "check": "npm run build && npm test && node scripts/validate-package.mjs"
+  }
+}
