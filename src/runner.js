@@ -69,10 +69,75 @@ function runId() {
   return `eval-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function abortSignal(parent, timeoutMs) {
-  const timeout = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : null;
-  if (parent && timeout && typeof AbortSignal?.any === "function") return AbortSignal.any([parent, timeout]);
-  return parent ?? timeout ?? undefined;
+function abortError(reason) {
+  if (reason?.name === "AbortError") return reason;
+  const message = typeof reason?.message === "string" ? reason.message : "Evaluation stopped";
+  if (typeof DOMException === "function") return new DOMException(message, "AbortError");
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function timeoutError(timeoutMs) {
+  const error = new Error(`Generation timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+  error.name = "TimeoutError";
+  return error;
+}
+
+/**
+ * Settle locally on stop or timeout even when an upstream provider ignores its
+ * AbortSignal. The signal is still aborted so Lumiverse can cancel cooperative
+ * providers and release their network request.
+ */
+export function generateRawWithTimeout(spindleApi, input, options = {}) {
+  const parentSignal = options.signal;
+  const timeoutMs = Number(options.timeoutMs);
+  const controller = new AbortController();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    };
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onParentAbort = () => {
+      const error = abortError(parentSignal?.reason);
+      if (!controller.signal.aborted) controller.abort(error);
+      settle(reject, error);
+    };
+
+    if (parentSignal?.aborted) {
+      onParentAbort();
+      return;
+    }
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+
+    timer = setTimeout(() => {
+      const error = timeoutError(timeoutMs);
+      if (!controller.signal.aborted) controller.abort(error);
+      settle(reject, error);
+    }, timeoutMs);
+
+    let request;
+    try {
+      request = spindleApi.generate.raw({ ...input, signal: controller.signal });
+    } catch (error) {
+      settle(reject, error);
+      return;
+    }
+    Promise.resolve(request).then(
+      (response) => settle(resolve, response),
+      (error) => settle(reject, parentSignal?.aborted ? abortError(parentSignal.reason) : error),
+    );
+  });
 }
 
 function responseContent(response) {
@@ -235,20 +300,20 @@ async function runJudge(spindleApi, run, userId, parentSignal, hooks, timeoutMs)
   const batches = judgeBatches(run.results);
   for (const [batchIndex, batch] of batches.entries()) {
     if (parentSignal?.aborted) throw new DOMException("Evaluation stopped", "AbortError");
-    hooks.progress?.({ phase: "judge", current: batchIndex + 1, total: batches.length, label: `Subjective judge batch ${batchIndex + 1} of ${batches.length}` });
+    hooks.progress?.({ phase: "judge", current: batchIndex + 1, total: batches.length, label: `Subjective judge batch ${batchIndex + 1} of ${batches.length}`, timeoutMs });
     try {
-      const response = await spindleApi.generate.raw(requestInput(
+      const response = await generateRawWithTimeout(spindleApi, requestInput(
         { ...run.judge, temperature: 0, maxTokens: run.judge.maxTokens, reasoning: run.judge.reasoning },
         judgeMessages(batch),
-        abortSignal(parentSignal, timeoutMs),
+        undefined,
         userId,
-      ));
+      ), { signal: parentSignal, timeoutMs });
       addUsage(run.usage, response?.usage);
       const items = validateJudgeItems(parseJudgeJson(responseContent(response)), batch);
       run.judge.items.push(...items);
       if (items.length !== batch.length) run.judge.errors.push(`Judge batch ${batchIndex + 1} scored ${items.length} of ${batch.length} responses.`);
     } catch (error) {
-      if (parentSignal?.aborted || error?.name === "AbortError") throw error;
+      if (parentSignal?.aborted) throw error;
       run.judge.errors.push(`Judge batch ${batchIndex + 1}: ${String(error?.message ?? error)}`);
     }
     await hooks.persist?.(run);
@@ -283,16 +348,17 @@ export async function executeRun(spindleApi, run, options = {}) {
           repetition,
           testId: test.id,
           label: test.title,
+          timeoutMs,
         });
         const requestStarted = Date.now();
         let result;
         try {
-          const response = await spindleApi.generate.raw(requestInput(
+          const response = await generateRawWithTimeout(spindleApi, requestInput(
             run.target,
             messages,
-            abortSignal(signal, timeoutMs),
+            undefined,
             options.userId,
-          ));
+          ), { signal, timeoutMs });
           const content = responseContent(response);
           if (!content.trim()) throw new Error("Provider returned an empty response.");
           const scored = scoreResponse(test, content);
@@ -316,7 +382,7 @@ export async function executeRun(spindleApi, run, options = {}) {
             score: scored,
           };
         } catch (error) {
-          if (signal?.aborted || error?.name === "AbortError") throw error;
+          if (signal?.aborted) throw error;
           result = {
             resultId: `${test.id}.r${repetition}`,
             testId: test.id,
@@ -342,7 +408,7 @@ export async function executeRun(spindleApi, run, options = {}) {
     await runJudge(spindleApi, run, options.userId, signal, hooks, timeoutMs);
     run.status = "complete";
   } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") {
+    if (signal?.aborted) {
       run.status = "interrupted";
       run.errors.push("Stopped by the user.");
     } else {

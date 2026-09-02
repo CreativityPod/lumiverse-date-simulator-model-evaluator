@@ -5,6 +5,7 @@ import { CASE_FIELDS } from "../src/scorers.js";
 import {
   createRun,
   executeRun,
+  generateRawWithTimeout,
   normalizeJudge,
   normalizeModelTarget,
   reasoningOverride,
@@ -31,6 +32,49 @@ test("normalizes targets, judge settings, and reasoning overrides", () => {
   assert.equal(normalizeModelTarget({ temperature: 9, maxTokens: 2 }).temperature, 2);
   assert.equal(normalizeModelTarget({ temperature: 9, maxTokens: 2 }).maxTokens, 400);
   assert.equal(normalizeJudge({ enabled: true }).enabled, true);
+});
+
+test("hard timeout settles locally and aborts a provider that never responds", async () => {
+  let providerSignal;
+  const spindleApi = {
+    generate: {
+      raw(input) {
+        providerSignal = input.signal;
+        return new Promise(() => {});
+      },
+    },
+  };
+
+  await assert.rejects(
+    generateRawWithTimeout(spindleApi, { messages: [] }, { timeoutMs: 5 }),
+    (error) => error?.name === "TimeoutError" && /timed out after/.test(error.message),
+  );
+  assert.equal(providerSignal.aborted, true);
+});
+
+test("a provider-side abort is recorded for one fixture without stopping the suite", async () => {
+  let calls = 0;
+  const spindleApi = {
+    generate: {
+      async raw(input) {
+        calls += 1;
+        if (calls === 2) throw new DOMException("Provider cancelled its request", "AbortError");
+        return { content: responseFor(input.messages) };
+      },
+    },
+  };
+  const run = createRun({
+    connectionId: "connection-1",
+    provider: "openai",
+    model: "occasionally-aborting-model",
+    suite: "quick",
+  }, { enabled: false });
+
+  const finished = await executeRun(spindleApi, run);
+  assert.equal(finished.status, "complete");
+  assert.equal(finished.results.length, 7);
+  assert.equal(finished.results[1].runtime.status, "error");
+  assert.match(finished.results[1].runtime.error, /Provider cancelled/);
 });
 
 test("official judge mode rejects self-judging", () => {

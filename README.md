@@ -56,9 +56,9 @@ The report modal includes:
 - canonical card source, snapshot, compiler, scorer, and judge-rubric fingerprints; and
 - summary-only and full-evidence JSON export.
 
-Each Recent Reports row has an individual **Delete** action, and each open report has the unambiguous **Delete this report** action. **Clear all reports** removes every stored report after confirmation while preserving connection, model, judge, and comparison-queue settings. Report deletion is disabled while an evaluation is running.
+Each open report has an unambiguous **Delete this report** action. **Clear all reports** removes every stored report after confirmation while preserving connection, model, judge, and comparison-queue settings. Report deletion is disabled while an evaluation is running.
 
-Provider failures and interrupted tests are recorded as runtime errors or inconclusive evidence, not arbitrary capability failures.
+Each generation has a three-minute limit, shown in the running status. A timed-out fixture is recorded as a runtime error and the suite continues, even if the provider does not acknowledge cancellation. Provider failures and interrupted tests are recorded as runtime errors or inconclusive evidence, not arbitrary capability failures.
 
 ## Canonical snapshot
 

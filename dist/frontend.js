@@ -751,12 +751,7 @@ export function setup(ctx) {
         open.textContent = "Loading…";
         ctx.sendToBackend({ type: "evaluator_get_run", id: run.id });
       });
-      const remove = button("Delete", "dme-icon-button dme-danger");
-      remove.disabled = running || pendingDeleteId === run.id;
-      remove.addEventListener("click", () => requestDelete(run));
-      const actions = element("div", "dme-title-actions");
-      actions.append(open, remove);
-      row.append(copy, actions);
+      row.append(copy, open);
       historyList.appendChild(row);
     }
   }
@@ -836,7 +831,7 @@ export function setup(ctx) {
   runNowButton.addEventListener("click", () => launch([currentTarget()]));
   runSelectedButton.addEventListener("click", () => launch(queue));
   clearButton.addEventListener("click", () => { queue = []; renderQueue(); saveConfig(); });
-  stopButton.addEventListener("click", () => { stopButton.disabled = true; setStatus("Stopping after the current provider abort is acknowledged…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
+  stopButton.addEventListener("click", () => { stopButton.disabled = true; setStatus("Stopping the current test…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
   compareButton.addEventListener("click", () => { if (latestBatch.length) openComparisonReport(ctx, latestBatch); });
   clearReportsButton.addEventListener("click", requestClearReports);
 
@@ -873,7 +868,8 @@ export function setup(ctx) {
     if (payload?.type === "evaluator_progress") {
       const local = payload.total ? payload.current / payload.total : 0;
       const overall = ((payload.queueIndex ?? 0) + local) / Math.max(1, payload.totalModels ?? 1);
-      setStatus(`${payload.model} · ${payload.phase === "judge" ? "Judge" : `Test ${payload.current}/${payload.total}`} · ${payload.label}`, overall * 100);
+      const timeout = payload.timeoutMs ? ` · ${formatDuration(payload.timeoutMs)} limit` : "";
+      setStatus(`${payload.model} · ${payload.phase === "judge" ? "Judge" : `Test ${payload.current}/${payload.total}`} · ${payload.label}${timeout}`, overall * 100);
     }
     if (payload?.type === "evaluator_run_complete") {
       latestBatch.push(payload.run);

@@ -38,6 +38,7 @@ check(frontend.includes("mountModelCombobox"), "Frontend uses native model combo
 check(frontend.includes("showModal"), "Frontend contains the graphical report modal");
 check(frontend.includes("registerDrawerTab"), "Frontend registers a drawer tab");
 check(frontend.includes("Delete this report"), "Report modal exposes individual deletion");
+check(!frontend.includes('button("Delete",'), "Recent Reports rows do not duplicate the report deletion action");
 check(frontend.includes("Clear all reports"), "Drawer exposes confirmed bulk deletion");
 
 if (failures.length) {

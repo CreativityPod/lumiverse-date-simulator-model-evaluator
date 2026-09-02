@@ -58,6 +58,8 @@ test("built backend boots and completes a headless queue without chat APIs", asy
     AbortController,
     AbortSignal,
     DOMException,
+    clearTimeout,
+    setTimeout,
     structuredClone,
   });
   assert.equal(typeof frontendHandler, "function");
