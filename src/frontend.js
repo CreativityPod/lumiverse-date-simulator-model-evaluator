@@ -88,6 +88,47 @@ function scoreValue(family) {
   return family?.subjectiveScore ?? family?.objectiveScore ?? null;
 }
 
+export function gatePresentation(run, gate) {
+  let verdict = run.aggregate?.gates?.[gate] ?? "inconclusive";
+  // Older reports used "inconclusive" both for missing tests and runtime errors.
+  // Correct the display only when the stored evidence proves there was no test.
+  if (verdict === "inconclusive" && run.status === "complete" && Array.isArray(run.results)
+    && !run.results.some((result) => result.gates?.includes(gate))) {
+    verdict = "not_tested";
+  }
+  return {
+    verdict,
+    detail: verdict === "not_tested"
+      ? "No test result was recorded for this check; it was not run in this report."
+      : verdict === "inconclusive"
+        ? "No usable verdict is available. Inspect this check's results for runtime errors or unresolved assertions."
+        : "",
+  };
+}
+
+export function scoreDistribution(run, family) {
+  const results = (run.results ?? [])
+    .filter((result) => result.family === family && result.runtime?.status === "success" && Number.isFinite(result.score?.score))
+    .sort((a, b) => a.score.score - b.score.score);
+  const groups = [];
+  for (const result of results) {
+    const score = result.score.score;
+    const last = groups.at(-1);
+    if (last?.score === score) last.results.push(result);
+    else groups.push({ score, results: [result] });
+  }
+  const values = results.map((result) => result.score.score);
+  const middle = Math.floor(values.length / 2);
+  return {
+    count: values.length,
+    mean: values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null,
+    median: values.length ? (values.length % 2 ? values[middle] : Math.round((values[middle - 1] + values[middle]) / 2)) : null,
+    minimum: values[0] ?? null,
+    maximum: values.at(-1) ?? null,
+    groups: groups.map((group) => ({ ...group, count: group.results.length })),
+  };
+}
+
 function createBar(label, value, note = "") {
   const row = element("div", "dme-bar-row");
   const head = element("div", "dme-bar-head");
@@ -101,36 +142,53 @@ function createBar(label, value, note = "") {
   return row;
 }
 
-function reliabilityStrip(run, family, label) {
-  const values = (run.results ?? [])
-    .filter((result) => result.family === family && Number.isFinite(result.score?.score))
-    .map((result) => Number(result.score.score))
-    .sort((a, b) => a - b);
-  const row = element("div", "dme-reliability-row");
-  const head = element("div", "dme-bar-head");
-  if (!values.length) {
-    head.append(element("span", "", label), element("span", "dme-hint", "No completed samples"));
+function scoreDistributionStrip(run, family, label) {
+  const data = scoreDistribution(run, family);
+  const row = element("div", "dme-distribution-row");
+  const head = element("div", "dme-distribution-head");
+  if (!data.count) {
+    head.append(element("span", "", label), element("span", "dme-hint", "No completed, scored results"));
     row.appendChild(head);
     return row;
   }
-  const middle = Math.floor(values.length / 2);
-  const median = values.length % 2 ? values[middle] : Math.round((values[middle - 1] + values[middle]) / 2);
-  head.append(element("span", "", label), element("span", "dme-hint", `${values.length} samples · median ${median} · range ${values[0]}–${values.at(-1)}`));
-  const strip = element("div", "dme-dot-strip");
-  for (const value of values) {
-    const dot = element("span", "dme-dot");
-    dot.style.left = `${value}%`;
-    dot.title = `${label}: ${value}`;
-    dot.setAttribute("aria-label", `${label} score ${value}`);
+  head.append(element("span", "", label), element("span", "dme-hint", `${data.count} result${data.count === 1 ? "" : "s"} · Mean ${data.mean} · Median ${data.median} · Range ${data.minimum}–${data.maximum}`));
+  const strip = element("div", "dme-score-strip");
+  const track = element("div", "dme-score-track");
+  strip.appendChild(track);
+  const lanes = [];
+  const breakdown = element("div", "dme-score-breakdown");
+  for (const group of data.groups) {
+    // Stagger nearby score groups so count badges remain distinct on narrow modals.
+    let lane = lanes.findIndex((lastScore) => group.score - lastScore >= 12);
+    if (lane < 0) lane = lanes.length;
+    lanes[lane] = group.score;
+    const description = `${group.count} result${group.count === 1 ? "" : "s"} at ${group.score}`;
+    const dot = element("span", "dme-score-count", String(group.count));
+    dot.style.left = `${group.score}%`;
+    dot.style.top = `${lane * 28}px`;
+    dot.tabIndex = 0;
+    dot.title = `${description}\n${group.results.map((result) => `${result.testId || label}${result.repetition ? ` · repetition ${result.repetition}` : ""}${result.title ? ` · ${result.title}` : ""}`).join("\n")}`;
+    dot.setAttribute("aria-label", dot.title);
     strip.appendChild(dot);
+    const item = element("span", "dme-score-bucket", description);
+    breakdown.appendChild(item);
   }
-  row.append(head, strip);
+  strip.style.height = `${lanes.length * 28 + 24}px`;
+  const mean = element("span", "dme-score-mean");
+  mean.style.left = `${data.mean}%`;
+  mean.title = `Mean objective score: ${data.mean}`;
+  mean.setAttribute("aria-label", mean.title);
+  strip.appendChild(mean);
+  const axis = element("div", "dme-score-axis");
+  for (const tick of [0, 50, 100]) axis.appendChild(element("span", "", String(tick)));
+  row.append(head, strip, axis, breakdown);
   return row;
 }
 
 function verdictBadge(verdict, label = "") {
-  const icons = { pass: "✓", fail: "!", inconclusive: "?", not_applicable: "–" };
-  return element("span", `dme-verdict dme-${verdict}`, `${icons[verdict] ?? "?"} ${label || verdict}`);
+  const icons = { pass: "✓", fail: "!", inconclusive: "?", not_applicable: "–", not_tested: "–" };
+  const names = { not_tested: "Not tested", not_applicable: "Not applicable" };
+  return element("span", `dme-verdict dme-${verdict}`, `${icons[verdict] ?? "?"} ${label || names[verdict] || verdict}`);
 }
 
 function downloadJson(name, value) {
@@ -185,7 +243,7 @@ function reportEnvironment(run) {
   return grid;
 }
 
-function overviewReport(run) {
+export function overviewReport(run) {
   const root = element("div", "dme-report-view");
   const aggregate = run.aggregate ?? {};
   const readiness = readinessPresentation(aggregate);
@@ -214,12 +272,14 @@ function overviewReport(run) {
   gates.appendChild(element("h3", "", "Date Simulator readiness gates"));
   const gateGrid = element("div", "dme-gate-grid");
   for (const [key, label] of Object.entries(GATE_LABELS)) {
-    const verdict = aggregate.gates?.[key] ?? "inconclusive";
+    const { verdict, detail } = gatePresentation(run, key);
     const row = element("div", "dme-gate");
+    if (detail) row.title = detail;
     row.append(verdictBadge(verdict), element("span", "", label));
     gateGrid.appendChild(row);
   }
   gates.appendChild(gateGrid);
+  gates.appendChild(element("p", "dme-hint", "Not tested: no test was run. Inconclusive: no usable verdict. Scores average completed, scored tests only."));
 
   const profiles = element("section", "dme-report-section");
   profiles.appendChild(element("h3", "", "Capability profile"));
@@ -228,14 +288,15 @@ function overviewReport(run) {
     createBar("Roleplay", scoreValue(aggregate.families?.roleplay), aggregate.families?.roleplay?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
     createBar("Creative writing", scoreValue(aggregate.families?.writing), aggregate.families?.writing?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
   );
-  const reliability = element("section", "dme-report-section");
-  reliability.appendChild(element("h3", "", "Reliability across completed fixtures"));
-  reliability.append(
-    reliabilityStrip(run, "date_simulator", "Date Simulator"),
-    reliabilityStrip(run, "roleplay", "Roleplay objective"),
-    reliabilityStrip(run, "writing", "Writing objective"),
+  const distribution = element("section", "dme-report-section");
+  distribution.appendChild(element("h3", "", "Score distribution across completed tests"));
+  distribution.appendChild(element("p", "dme-hint", "Each result is one completed test attempt, including repetitions. Numbered circles count results at each score; the diamond marks the mean (average). Median is the middle score; range is lowest–highest. This shows variation across tests, not repeat-run reliability."));
+  distribution.append(
+    scoreDistributionStrip(run, "date_simulator", "Date Simulator objective"),
+    scoreDistributionStrip(run, "roleplay", "Roleplay objective"),
+    scoreDistributionStrip(run, "writing", "Writing objective"),
   );
-  root.append(hero, scoreGrid, gates, profiles, reliability);
+  root.append(hero, scoreGrid, gates, profiles, distribution);
   return root;
 }
 
@@ -465,10 +526,19 @@ export function setup(ctx) {
     .dme-gate { display:flex; align-items:center; gap:8px; }
     .dme-verdict { display:inline-flex; align-items:center; gap:3px; font-size:.77rem; font-weight:750; white-space:nowrap; }
     .dme-pass { color:var(--lumiverse-success,#70b987); }.dme-fail { color:var(--lumiverse-danger,#e57979); }.dme-inconclusive { color:var(--lumiverse-warning,#d5a85f); }
+    .dme-not_tested,.dme-not_applicable { color:var(--lumiverse-text-muted); }
     .dme-bar-row { margin:9px 0; }.dme-bar-head { display:flex; justify-content:space-between; gap:10px; font-size:.83rem; text-transform:capitalize; }
     .dme-bar-track { height:9px; margin-top:4px; background:color-mix(in srgb,var(--lumiverse-text) 10%,transparent); border-radius:999px; overflow:hidden; }
     .dme-bar-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--lumiverse-accent,#725fe5),color-mix(in srgb,var(--lumiverse-accent,#725fe5) 55%,#5ac8a7)); }
-    .dme-reliability-row { margin:10px 0; }.dme-dot-strip { position:relative; height:16px; margin:5px 5px 0; border-radius:999px; background:linear-gradient(90deg,color-mix(in srgb,var(--lumiverse-danger,#e57979) 18%,transparent),color-mix(in srgb,var(--lumiverse-warning,#d5a85f) 18%,transparent),color-mix(in srgb,var(--lumiverse-success,#70b987) 18%,transparent)); }.dme-dot { position:absolute; top:3px; width:10px; height:10px; border:2px solid var(--lumiverse-bg); border-radius:50%; background:var(--lumiverse-accent,#725fe5); transform:translateX(-50%); }
+    .dme-distribution-row { margin:18px 0; }.dme-distribution-row:last-child { margin-bottom:0; }
+    .dme-distribution-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 14px; font-size:.83rem; }
+    .dme-score-strip { position:relative; margin:12px 16px 0; }
+    .dme-score-track { position:absolute; inset:0 0 22px; border-radius:8px; background:linear-gradient(90deg,color-mix(in srgb,var(--lumiverse-danger,#e57979) 15%,transparent),color-mix(in srgb,var(--lumiverse-warning,#d5a85f) 15%,transparent),color-mix(in srgb,var(--lumiverse-success,#70b987) 15%,transparent)); }
+    .dme-score-count { box-sizing:border-box; position:absolute; display:grid; place-items:center; min-width:24px; height:24px; padding:0 5px; border:2px solid var(--lumiverse-bg); border-radius:999px; background:var(--lumiverse-accent,#725fe5); color:white; font-size:.72rem; font-weight:750; transform:translateX(-50%); }
+    .dme-score-count:focus-visible { outline:2px solid var(--lumiverse-text); outline-offset:2px; }
+    .dme-score-mean { box-sizing:border-box; position:absolute; bottom:3px; width:10px; height:10px; background:var(--lumiverse-text); border:1px solid var(--lumiverse-bg); transform:translateX(-50%) rotate(45deg); }
+    .dme-score-axis { display:flex; justify-content:space-between; margin:2px 12px 7px; font-size:.7rem; color:var(--lumiverse-text-muted); }
+    .dme-score-breakdown { display:flex; flex-wrap:wrap; gap:5px; }.dme-score-bucket { padding:3px 7px; border:1px solid var(--lumiverse-border); border-radius:6px; color:var(--lumiverse-text-muted); font-size:.72rem; }
     .dme-result { border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }
     .dme-result-summary { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:9px; align-items:center; padding:11px; cursor:pointer; }
     .dme-result-title { overflow-wrap:anywhere; }.dme-result-score { font-weight:750; }

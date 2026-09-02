@@ -10,7 +10,7 @@ export const CASE_FIELDS = Object.freeze([
   "INITIAL STATE",
 ]);
 
-const SCORING_VERSION = "1.1.0";
+const SCORING_VERSION = "1.1.1";
 
 function excerpt(text, index = 0, length = 280) {
   const source = String(text ?? "");
@@ -274,7 +274,9 @@ function average(values) {
 }
 
 function gateVerdict(results, gate) {
-  const relevant = results.filter((result) => result.gates?.includes(gate) && result.runtime?.status === "success");
+  const attempted = results.filter((result) => result.gates?.includes(gate));
+  if (!attempted.length) return "not_tested";
+  const relevant = attempted.filter((result) => result.runtime?.status === "success");
   if (!relevant.length) return "inconclusive";
   if (relevant.some((result) => result.score?.assertions?.some((item) => item.verdict === "fail"))) return "fail";
   if (relevant.every((result) => result.score?.assertions?.some((item) => item.verdict === "pass"))) return "pass";

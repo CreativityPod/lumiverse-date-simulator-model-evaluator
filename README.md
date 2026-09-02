@@ -60,6 +60,10 @@ Each open report has an unambiguous **Delete this report** action. **Clear all r
 
 Each generation has a three-minute limit, shown in the running status. A timed-out fixture is recorded as a runtime error and the suite continues, even if the provider does not acknowledge cancellation. Provider failures and interrupted tests are recorded as runtime errors or inconclusive evidence, not arbitrary capability failures.
 
+Readiness gates show **Not tested** when no test was run, and **Inconclusive** when an attempted test has no usable verdict. Quick omits basic continuity and number-only locality; Standard adds continuity; Full includes both. Completed older reports also display the corrected Not tested label when their stored results confirm the omission, without changing stored scores.
+
+**Score distribution across completed tests** plots objective scores, not repeat-run reliability. Numbered circles count results at each score and a diamond marks the mean. Repetitions count as separate results; runtime errors and unscored results are excluded. For example, scores `0, 100, 100, 100, 100` appear as one result at 0 and four at 100, with mean 80, median 100, and range 0–100. Different tests measure different skills, so this spread is not a confidence interval or proof of run-to-run consistency.
+
 ## Canonical snapshot
 
 `npm run build` regenerates the prompt snapshot from the bundled `benchmark-source/Date_Simulator_CCv3_v1.5.5.json` and rejects any source whose SHA-256 is not explicitly approved. The project and distributed backend are self-contained and do not need the parent Date Simulator repository.

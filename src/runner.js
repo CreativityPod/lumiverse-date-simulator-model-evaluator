@@ -382,7 +382,6 @@ export async function executeRun(spindleApi, run, options = {}) {
             score: scored,
           };
         } catch (error) {
-          if (signal?.aborted) throw error;
           result = {
             resultId: `${test.id}.r${repetition}`,
             testId: test.id,
@@ -402,6 +401,7 @@ export async function executeRun(spindleApi, run, options = {}) {
         run.aggregate = aggregateRun(run.results, run.judge);
         await hooks.persist?.(run);
         hooks.result?.(result, run);
+        if (signal?.aborted) throw abortError(signal.reason);
       }
     }
 

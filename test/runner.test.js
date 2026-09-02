@@ -84,6 +84,18 @@ test("official judge mode rejects self-judging", () => {
   assert.equal(validateRunRequest(target, { ...judge, official: false }).length, 0);
 });
 
+test("stopping an in-flight test records an inconclusive attempt rather than Not tested", async () => {
+  const controller = new AbortController();
+  const spindleApi = { generate: { raw() { controller.abort(); return new Promise(() => {}); } } };
+  const run = createRun({ connectionId: "c1", provider: "openai", model: "test-model", suite: "quick" }, { enabled: false });
+  const finished = await executeRun(spindleApi, run, { signal: controller.signal });
+  assert.equal(finished.status, "interrupted");
+  assert.equal(finished.results.length, 1);
+  assert.equal(finished.results[0].runtime.status, "error");
+  assert.equal(finished.aggregate.gates.numbered_questions, "inconclusive");
+  assert.equal(finished.aggregate.gates.private_profile, "not_tested");
+});
+
 test("executes the seven-call Quick suite headlessly with per-request model overrides", async () => {
   const calls = [];
   const spindleApi = {

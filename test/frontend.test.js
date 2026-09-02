@@ -4,8 +4,11 @@ import test from "node:test";
 import {
   EVALUATOR_ICON_SVG,
   formatDuration,
+  gatePresentation,
+  overviewReport,
   readinessPresentation,
   scoreBand,
+  scoreDistribution,
 } from "../src/frontend.js";
 
 test("uses a reusable chart icon", () => {
@@ -29,4 +32,79 @@ test("formats duration and score bands", () => {
   assert.equal(scoreBand(88).label, "Excellent");
   assert.equal(scoreBand(60).label, "Mixed");
   assert.equal(scoreBand(40).label, "Weak");
+});
+
+test("completed legacy reports show unrun gates as Not tested without modifying stored scores", () => {
+  const run = { status: "complete", aggregate: { gates: { continuity: "inconclusive" } }, results: [] };
+  assert.equal(gatePresentation(run, "continuity").verdict, "not_tested");
+  assert.equal(run.aggregate.gates.continuity, "inconclusive");
+  assert.equal(gatePresentation({ ...run, status: "interrupted" }, "continuity").verdict, "inconclusive");
+  assert.equal(gatePresentation({ aggregate: run.aggregate }, "continuity").verdict, "inconclusive");
+});
+
+test("gate labels preserve attempted errors and decisive verdicts", () => {
+  const run = {
+    status: "complete",
+    aggregate: { gates: { continuity: "inconclusive", private_profile: "fail", number_locality: "not_tested" } },
+    results: [{ gates: ["continuity"], runtime: { status: "error" } }],
+  };
+  assert.equal(gatePresentation(run, "continuity").verdict, "inconclusive");
+  assert.equal(gatePresentation(run, "private_profile").verdict, "fail");
+  assert.equal(gatePresentation(run, "number_locality").verdict, "not_tested");
+});
+
+const scoredResult = (score, index = 0) => ({
+  resultId: `fixture-${index}.r1`, testId: `fixture-${index}`, family: "date_simulator", repetition: 1,
+  runtime: { status: "success" }, score: { score },
+});
+
+test("groups four overlapping 100s and one zero while preserving a mean of 80", () => {
+  const run = { results: [100, 0, 100, 100, 100].map(scoredResult) };
+  const before = structuredClone(run);
+  const distribution = scoreDistribution(run, "date_simulator");
+  assert.equal(distribution.count, 5);
+  assert.equal(distribution.mean, 80);
+  assert.equal(distribution.median, 100);
+  assert.equal(distribution.minimum, 0);
+  assert.equal(distribution.maximum, 100);
+  assert.deepEqual(distribution.groups.map(({ score, count }) => ({ score, count })), [{ score: 0, count: 1 }, { score: 100, count: 4 }]);
+  assert.deepEqual(run, before);
+});
+
+test("distribution excludes errors and unscored responses, and counts repeated attempts separately", () => {
+  const run = { results: [scoredResult(50), { ...scoredResult(100), repetition: 2 }, scoredResult(null),
+    { ...scoredResult(0), runtime: { status: "error" } }, { ...scoredResult(0), family: "writing" }] };
+  const data = scoreDistribution(run, "date_simulator");
+  assert.equal(data.count, 2);
+  assert.equal(data.mean, 75);
+  assert.equal(data.median, 75);
+  const empty = scoreDistribution({ results: [] }, "date_simulator");
+  assert.equal(empty.count, 0);
+  assert.equal(empty.mean, null);
+  assert.equal(empty.median, null);
+  assert.equal(empty.minimum, null);
+});
+
+test("overview renders counted markers, a separate mean marker, and Not tested labels", (context) => {
+  class Node {
+    constructor(tag) { this.tag = tag; this.children = []; this.style = {}; this.attributes = {}; }
+    append(...nodes) { this.children.push(...nodes); }
+    appendChild(node) { this.append(node); return node; }
+    setAttribute(key, value) { this.attributes[key] = value; }
+  }
+  const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: (tag) => new Node(tag) } });
+  context.after(() => {
+    if (original) Object.defineProperty(globalThis, "document", original);
+    else delete globalThis.document;
+  });
+  const root = overviewReport({ status: "complete", aggregate: { gates: { continuity: "inconclusive" } }, results: [0, 100, 100, 100, 100].map(scoredResult) });
+  const flatten = (node) => [node, ...node.children.flatMap(flatten)];
+  const nodes = flatten(root);
+  const markers = nodes.filter((node) => node.className === "dme-score-count");
+  assert.deepEqual(markers.map((node) => [node.style.left, node.textContent]), [["0%", "1"], ["100%", "4"]]);
+  assert.equal(nodes.find((node) => node.className === "dme-score-mean").style.left, "80%");
+  assert.ok(nodes.some((node) => node.textContent === "4 results at 100"));
+  assert.ok(nodes.some((node) => node.textContent === "– Not tested"));
+  assert.ok(nodes.some((node) => node.textContent === "Score distribution across completed tests"));
 });

@@ -59,7 +59,7 @@ The first view answers three questions independently:
 
 ### Date Simulator readiness gates
 
-Display pass/fail/inconclusive rows for:
+Display Pass / Fail / Not tested / Inconclusive rows for:
 
 - numbered questions;
 - number-only answer locality;
@@ -71,17 +71,21 @@ Display pass/fail/inconclusive rows for:
 
 If numbered questions or the private profile fail, display **Not ready for Date Simulator v1.5.5** regardless of prose scores.
 
+Not tested means no test was run for that area; it does not mean failure. Inconclusive is reserved for attempted tests without a usable verdict. Use neutral styling for Not tested, distinct from the warning styling for Inconclusive. Completed legacy reports may correct this display from their stored result coverage without rescoring or rewriting the report.
+
 ### Capability profiles
 
 Use horizontal bars for Roleplay and Writing dimensions. Bars are more readable than radar charts on narrow screens and support exact labels, values, sample counts, and uncertainty.
 
-### Reliability
+### Score distribution across completed tests
 
-Use a compact dot/strip plot for repeated scores, with median and range. Do not draw a smooth distribution from a small number of repetitions.
+Show completed, scored objective results only. Group identical scores into numbered circles showing how many results share that score; stagger nearby groups to avoid overlap. Add a separate diamond for the mean, a 0–100 axis, and a visible textual count breakdown. Show result count, mean, median, and range. Hover/focus evidence identifies the contributing test and repetition.
+
+Explain that a result is one test attempt, including repetitions. This chart compares different tests, not repeat-run reliability; it is not a confidence interval. A result set of 0, 100, 100, 100, 100 must visibly show counts 1 and 4, mean 80, median 100, and range 0–100.
 
 ## 4. Detail tabs
 
-- **Overview:** readiness gates, high-level profiles, reliability, highest-severity findings.
+- **Overview:** readiness gates, high-level profiles, objective score distribution, highest-severity findings.
 - **Date Simulator:** numbered-menu parses, capsule validation, agency/safety/continuity checkpoints, and raw evidence.
 - **Roleplay:** fixture-by-fixture rubric dimensions, repetition metrics, and excerpts.
 - **Writing:** constraint checks, writing dimensions, and excerpts.
@@ -92,7 +96,7 @@ Use a compact dot/strip plot for repeated scores, with median and range. Do not 
 
 Every assertion shows:
 
-- verdict: Pass, Fail, Not applicable, or Inconclusive;
+- verdict: Pass, Fail, Not tested, Not applicable, or Inconclusive;
 - severity;
 - source: Objective, Judge, or Human;
 - fixture and repetition;
@@ -133,6 +137,7 @@ Use icon, text, and color together:
 - ✓ Pass
 - ! Fail
 - – Not applicable
+- – Not tested
 - ? Inconclusive
 - ◆ Critical
 
