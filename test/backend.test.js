@@ -33,6 +33,10 @@ test("built backend boots and completes a headless queue without chat APIs", asy
     storage: {
       async getJson(path, { fallback }) { return storage.has(path) ? structuredClone(storage.get(path)) : fallback; },
       async setJson(path, value) { storage.set(path, structuredClone(value)); },
+      async delete(path) { storage.delete(path); },
+      async list(prefix) {
+        return [...storage.keys()].filter((path) => path.startsWith(prefix)).map((path) => path.slice(prefix.length));
+      },
     },
     generate: {
       async raw(input) {
@@ -75,4 +79,26 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   assert.ok(rawCalls.every((call) => call.connection_id === "conn-1" && call.model === "override-model"));
   assert.ok([...storage.keys()].some((path) => path.startsWith("runs/")));
   assert.ok(messages.some((payload) => payload.type === "evaluator_run_complete"));
+
+  const completedRunId = completed.runs[0].id;
+  await frontendHandler({ type: "evaluator_delete_run", id: completedRunId }, "user-1");
+  assert.equal(storage.has(`runs/${completedRunId}.json`), false);
+  assert.equal(storage.get("index.json").runs.length, 0);
+  const deleted = messages.find((payload) => payload.type === "evaluator_run_deleted");
+  assert.equal(deleted.id, completedRunId);
+  assert.equal(deleted.deleted, true);
+
+  storage.set("config.json", { preserved: true });
+  storage.set("runs/orphan-1.json", { id: "orphan-1" });
+  storage.set("runs/orphan-2.json", { id: "orphan-2" });
+  storage.set("runs/keep-notes.txt", "not a report");
+  storage.set("index.json", { schemaVersion: 1, runs: [{ id: "orphan-1" }] });
+  await frontendHandler({ type: "evaluator_clear_reports" }, "user-1");
+  assert.equal(storage.has("runs/orphan-1.json"), false);
+  assert.equal(storage.has("runs/orphan-2.json"), false);
+  assert.equal(storage.has("runs/keep-notes.txt"), true);
+  assert.deepEqual(storage.get("config.json"), { preserved: true });
+  assert.equal(storage.get("index.json").runs.length, 0);
+  const cleared = messages.find((payload) => payload.type === "evaluator_reports_cleared");
+  assert.equal(cleared.deletedCount, 2);
 });

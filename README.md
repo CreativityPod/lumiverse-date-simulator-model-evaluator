@@ -56,6 +56,8 @@ The report modal includes:
 - canonical card source, snapshot, compiler, scorer, and judge-rubric fingerprints; and
 - summary-only and full-evidence JSON export.
 
+Each Recent Reports row has an individual **Delete** action, and each open report has the unambiguous **Delete this report** action. **Clear all reports** removes every stored report after confirmation while preserving connection, model, judge, and comparison-queue settings. Report deletion is disabled while an evaluation is running.
+
 Provider failures and interrupted tests are recorded as runtime errors or inconclusive evidence, not arbitrary capability failures.
 
 ## Canonical snapshot

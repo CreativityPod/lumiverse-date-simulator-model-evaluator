@@ -143,6 +143,25 @@ function downloadJson(name, value) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function confirmAction(ctx, { title, message, confirmLabel, onConfirm }) {
+  const modal = ctx.ui.showModal({ title, width: 460, maxHeight: 360, persistent: true });
+  const body = element("div", "dme-confirm");
+  body.appendChild(element("p", "", message));
+  const actions = element("div", "dme-actions dme-confirm-actions");
+  const cancel = button("Cancel");
+  const confirm = button(confirmLabel, "dme-danger");
+  cancel.addEventListener("click", () => modal.dismiss());
+  confirm.addEventListener("click", () => {
+    confirm.disabled = true;
+    cancel.disabled = true;
+    onConfirm();
+    modal.dismiss();
+  });
+  actions.append(cancel, confirm);
+  body.appendChild(actions);
+  modal.root.appendChild(body);
+}
+
 function reportEnvironment(run) {
   const grid = element("dl", "dme-env-grid");
   const values = [
@@ -270,7 +289,7 @@ function evidenceReport(run, family) {
   return root;
 }
 
-function openRunReport(ctx, run) {
+function openRunReport(ctx, run, callbacks = {}) {
   const modal = ctx.ui.showModal({
     title: "Model Evaluator report",
     width: 980,
@@ -283,7 +302,11 @@ function openRunReport(ctx, run) {
     element("div", "dme-report-model", run.target.model),
     element("div", "dme-report-subtitle", `${run.target.connectionName || run.target.provider} · ${run.suite.name} · ${new Date(run.startedAt).toLocaleString()}`),
   );
-  const actions = element("div", "dme-report-actions");
+  const reportActions = element("div", "dme-report-actions");
+  const deleteReport = button("Delete this report", "dme-danger");
+  deleteReport.addEventListener("click", () => {
+    callbacks.requestDelete?.(run, () => modal.dismiss());
+  });
   const exportSummary = button("Export summary JSON");
   exportSummary.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-summary.json`, {
     id: run.id,
@@ -297,8 +320,8 @@ function openRunReport(ctx, run) {
   }));
   const exportFull = button("Export full evidence");
   exportFull.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-full.json`, run));
-  actions.append(exportSummary, exportFull);
-  context.appendChild(actions);
+  reportActions.append(deleteReport, exportSummary, exportFull);
+  context.appendChild(reportActions);
 
   const tabs = element("div", "dme-report-tabs");
   tabs.setAttribute("role", "tablist");
@@ -384,6 +407,8 @@ export function setup(ctx) {
   let targetModelHandle = null;
   let judgeModelHandle = null;
   let pendingReportId = "";
+  let pendingDeleteId = "";
+  let clearingReports = false;
 
   const removeStyle = ctx.dom.addStyle(`
     .dme-panel { display:flex; flex-direction:column; gap:14px; padding:14px; color:var(--lumiverse-text); }
@@ -392,6 +417,7 @@ export function setup(ctx) {
     .dme-hero p,.dme-report-hero p { margin:0; color:var(--lumiverse-text-muted); }
     .dme-section { display:flex; flex-direction:column; gap:10px; padding:13px; border:1px solid var(--lumiverse-border); border-radius:12px; background:color-mix(in srgb,var(--lumiverse-bg) 92%,var(--lumiverse-text) 2%); }
     .dme-section-title { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .dme-title-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; }
     .dme-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .dme-field { display:flex; flex-direction:column; gap:5px; min-width:0; }
     .dme-label { font-size:.84rem; font-weight:650; }
@@ -420,6 +446,7 @@ export function setup(ctx) {
     .dme-report-model { font-size:1.2rem; font-weight:750; overflow-wrap:anywhere; }
     .dme-report-subtitle { color:var(--lumiverse-text-muted); font-size:.82rem; margin-top:3px; }
     .dme-report-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+    .dme-confirm { display:flex; flex-direction:column; gap:14px; padding:16px; color:var(--lumiverse-text); }.dme-confirm p { margin:0; line-height:1.5; }.dme-confirm-actions { justify-content:flex-end; }
     .dme-report-tabs { display:flex; gap:4px; padding:8px 12px; overflow:auto; border-bottom:1px solid var(--lumiverse-border); }
     .dme-tab { white-space:nowrap; border-color:transparent; background:transparent; }
     .dme-tab.dme-active { color:var(--lumiverse-accent,#8c7cf0); border-color:var(--lumiverse-accent,#8c7cf0); }
@@ -560,9 +587,13 @@ export function setup(ctx) {
   const historySection = element("section", "dme-section");
   const historyTitle = element("div", "dme-section-title");
   historyTitle.append(element("h3", "", "Recent reports"));
+  const historyActions = element("div", "dme-title-actions");
   const compareButton = button("Compare last batch");
   compareButton.disabled = true;
-  historyTitle.appendChild(compareButton);
+  const clearReportsButton = button("Clear all reports", "dme-danger");
+  clearReportsButton.disabled = true;
+  historyActions.append(compareButton, clearReportsButton);
+  historyTitle.appendChild(historyActions);
   const historyList = element("div", "dme-history");
   historySection.append(historyTitle, historyList);
 
@@ -700,6 +731,8 @@ export function setup(ctx) {
 
   function renderHistory() {
     historyList.replaceChildren();
+    compareButton.disabled = running || latestBatch.length < 2;
+    clearReportsButton.disabled = running || clearingReports || history.length === 0;
     if (!history.length) historyList.appendChild(element("div", "dme-empty", "Completed reports will appear here."));
     for (const run of history.slice(0, 20)) {
       const row = element("div", "dme-history-row");
@@ -710,13 +743,19 @@ export function setup(ctx) {
         element("div", "dme-row-meta", `${READINESS_LABELS[run.aggregate?.readiness] ?? run.status} · ${run.suite?.name ?? run.suite?.id} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : "queued"}`),
       );
       const open = button("Open report", "dme-icon-button");
+      open.disabled = running || pendingDeleteId === run.id;
       open.addEventListener("click", () => {
         pendingReportId = run.id;
         open.disabled = true;
         open.textContent = "Loading…";
         ctx.sendToBackend({ type: "evaluator_get_run", id: run.id });
       });
-      row.append(copy, open);
+      const remove = button("Delete", "dme-icon-button dme-danger");
+      remove.disabled = running || pendingDeleteId === run.id;
+      remove.addEventListener("click", () => requestDelete(run));
+      const actions = element("div", "dme-title-actions");
+      actions.append(open, remove);
+      row.append(copy, actions);
       historyList.appendChild(row);
     }
   }
@@ -727,6 +766,7 @@ export function setup(ctx) {
     addButton.disabled = value;
     stopButton.disabled = !value;
     renderQueue();
+    renderHistory();
   }
 
   function setStatus(text, percent = null, error = false) {
@@ -748,6 +788,39 @@ export function setup(ctx) {
     ctx.sendToBackend({ type: "evaluator_run_queue", queue: valid, judge: currentJudge(), timeoutMs: 180000 });
   }
 
+  function requestDelete(run, afterConfirm = () => {}) {
+    if (running || !run?.id) return;
+    const model = run.target?.model || "this model";
+    confirmAction(ctx, {
+      title: "Delete report?",
+      message: `Delete the selected ${model} report and all of its stored prompts, responses, scores, and evidence? This cannot be undone.`,
+      confirmLabel: "Delete this report",
+      onConfirm() {
+        pendingDeleteId = run.id;
+        renderHistory();
+        setStatus(`Deleting the selected ${model} report…`);
+        ctx.sendToBackend({ type: "evaluator_delete_run", id: run.id });
+        afterConfirm();
+      },
+    });
+  }
+
+  function requestClearReports() {
+    if (running || clearingReports || history.length === 0) return;
+    const count = history.length;
+    confirmAction(ctx, {
+      title: "Clear all reports?",
+      message: `Delete all ${count} indexed report${count === 1 ? "" : "s"} and every stored report file? Evaluator connection, model, judge, and queue settings will be preserved. This cannot be undone.`,
+      confirmLabel: "Clear all reports",
+      onConfirm() {
+        clearingReports = true;
+        renderHistory();
+        setStatus("Deleting all stored evaluator reports…");
+        ctx.sendToBackend({ type: "evaluator_clear_reports" });
+      },
+    });
+  }
+
   targetConnection.addEventListener("change", () => { remountTargetModel(selectedConnection(targetConnection)?.model || ""); saveConfig(); });
   judgeConnection.addEventListener("change", () => { remountJudgeModel(selectedConnection(judgeConnection)?.model || ""); saveConfig(); });
   for (const node of [suiteSelect, temperatureInput, maxTokensInput, reasoningSelect, judgeEnabled, officialJudge]) node.addEventListener("change", saveConfig);
@@ -764,6 +837,7 @@ export function setup(ctx) {
   clearButton.addEventListener("click", () => { queue = []; renderQueue(); saveConfig(); });
   stopButton.addEventListener("click", () => { stopButton.disabled = true; setStatus("Stopping after the current provider abort is acknowledged…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
   compareButton.addEventListener("click", () => { if (latestBatch.length) openComparisonReport(ctx, latestBatch); });
+  clearReportsButton.addEventListener("click", requestClearReports);
 
   cleanups.push(tab.onActivate(() => ctx.sendToBackend({ type: "evaluator_bootstrap_request" })));
   cleanups.push(ctx.onBackendMessage((payload) => {
@@ -808,19 +882,35 @@ export function setup(ctx) {
     if (payload?.type === "evaluator_model_rejected") setStatus(payload.message, 0, true);
     if (payload?.type === "evaluator_queue_complete") {
       setRunning(false);
-      compareButton.disabled = latestBatch.length < 2;
       setStatus(payload.stopped ? `Stopped. ${latestBatch.length} completed report${latestBatch.length === 1 ? "" : "s"} saved.` : `Complete. ${latestBatch.length} report${latestBatch.length === 1 ? "" : "s"} saved.`, 100);
-      if (latestBatch.length === 1) openRunReport(ctx, latestBatch[0]);
+      if (latestBatch.length === 1) openRunReport(ctx, latestBatch[0], { requestDelete });
       else if (latestBatch.length > 1) openComparisonReport(ctx, latestBatch);
     }
     if (payload?.type === "evaluator_run_detail" && payload.run) {
       pendingReportId = "";
-      openRunReport(ctx, payload.run);
+      openRunReport(ctx, payload.run, { requestDelete });
       renderHistory();
+    }
+    if (payload?.type === "evaluator_run_deleted") {
+      pendingDeleteId = "";
+      history = Array.isArray(payload.history) ? payload.history : history.filter((run) => run.id !== payload.id);
+      latestBatch = latestBatch.filter((run) => run.id !== payload.id);
+      renderHistory();
+      setStatus(payload.deleted === false ? "The stale report entry was removed." : "The selected report was deleted.", 0);
+    }
+    if (payload?.type === "evaluator_reports_cleared") {
+      pendingDeleteId = "";
+      clearingReports = false;
+      history = [];
+      latestBatch = [];
+      renderHistory();
+      setStatus(`${payload.deletedCount ?? 0} stored report${Number(payload.deletedCount) === 1 ? "" : "s"} deleted. Evaluator settings were preserved.`, 0);
     }
     if (payload?.type === "evaluator_error") {
       setRunning(false);
       pendingReportId = "";
+      pendingDeleteId = "";
+      clearingReports = false;
       setStatus(payload.message || "The evaluator encountered an error.", 0, true);
       renderHistory();
     }

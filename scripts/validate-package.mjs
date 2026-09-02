@@ -31,10 +31,14 @@ check(backend.includes("spindleApi.generate.raw"), "Backend uses raw generation"
 check(backend.includes("spindle.connections.list"), "Backend lists connection profiles");
 check(backend.includes("DATE_SIMULATOR_SNAPSHOT"), "Backend bundles the canonical card snapshot");
 check(backend.includes("DATE_SIM_CASE"), "Backend validates the private profile capsule");
+check(backend.includes("evaluator_delete_run"), "Backend supports individual report deletion");
+check(backend.includes("evaluator_clear_reports"), "Backend supports clearing all reports");
 check(frontend.includes("export function setup"), "Frontend exports setup");
 check(frontend.includes("mountModelCombobox"), "Frontend uses native model comboboxes");
 check(frontend.includes("showModal"), "Frontend contains the graphical report modal");
 check(frontend.includes("registerDrawerTab"), "Frontend registers a drawer tab");
+check(frontend.includes("Delete this report"), "Report modal exposes individual deletion");
+check(frontend.includes("Clear all reports"), "Drawer exposes confirmed bulk deletion");
 
 if (failures.length) {
   console.error(`Package validation failed:\n- ${failures.join("\n- ")}`);
