@@ -81,6 +81,10 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   assert.ok(rawCalls.every((call) => call.connection_id === "conn-1" && call.model === "override-model"));
   assert.ok([...storage.keys()].some((path) => path.startsWith("runs/")));
   assert.ok(messages.some((payload) => payload.type === "evaluator_run_complete"));
+  const progressEvents = messages.filter((payload) => payload.type === "evaluator_progress");
+  assert.equal(progressEvents.length, 7);
+  assert.ok(progressEvents.every((payload) => Number.isFinite(payload.requestStartedAt) && payload.serverNow >= payload.requestStartedAt));
+  assert.equal(messages.filter((payload) => payload.type === "evaluator_request_complete").length, 7);
 
   const completedRunId = completed.runs[0].id;
   await frontendHandler({ type: "evaluator_delete_run", id: completedRunId }, "user-1");

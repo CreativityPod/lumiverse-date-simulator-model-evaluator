@@ -82,3 +82,71 @@ test("new reports show absent quality as unassessed and expose response/judge di
   assert.ok(evidence.some((node) => node.textContent?.includes('"reasoning": "analysis"')));
   assert.ok(evidence.some((node) => node.textContent?.includes("Not assessed")));
 });
+
+test("run countdown follows request deadlines and cleans up across completion, Stop, errors and teardown", (context) => {
+  fakeDocument(context);
+  let now = 1000000;
+  let nextTimer = 0;
+  const intervals = new Map();
+  context.mock.method(Date, "now", () => now);
+  context.mock.method(globalThis, "setInterval", (callback) => { intervals.set(++nextTimer, callback); return nextTimer; });
+  context.mock.method(globalThis, "clearInterval", (id) => intervals.delete(id));
+  const tick = (milliseconds) => { now += milliseconds; for (const callback of [...intervals.values()]) callback(); };
+  const root = new FakeNode("div");
+  let receive;
+  let styles;
+  const cleanup = setup({
+    deferReady() {}, ready() {}, sendToBackend() {},
+    onBackendMessage: (callback) => { receive = callback; return () => {}; },
+    dom: { addStyle: (css) => { styles = css; return () => {}; }, cleanup() {} },
+    ui: { registerDrawerTab: () => ({ root, onActivate: () => () => {}, destroy() {} }) },
+  });
+  const spinner = flatten(root).find((node) => node.className === "dme-spinner");
+  const countdown = flatten(root).find((node) => node.className === "dme-countdown");
+  const progress = { type: "evaluator_progress", model: "target", phase: "target", current: 1, total: 7, totalModels: 1, label: "Test", timeoutMs: 300000, requestStartedAt: 2000000, serverNow: 2000000 };
+  assert.equal(spinner.hidden, true);
+  assert.equal(countdown.hidden, true);
+  assert.match(styles, /prefers-reduced-motion:reduce.*dme-spinner\{animation:none\}/);
+  receive({ type: "evaluator_queue_started", totalModels: 1 });
+  receive(progress);
+  assert.equal(spinner.hidden, false);
+  assert.equal(countdown.textContent, "5m 0s remaining · 5m 0s request limit");
+  assert.equal(countdown.attributes["aria-live"], "off");
+  tick(1000);
+  assert.equal(countdown.textContent, "4m 59s remaining · 5m 0s request limit");
+  tick(61000); // Simulate delayed callbacks in a background tab.
+  assert.equal(countdown.textContent, "3m 58s remaining · 5m 0s request limit");
+
+  receive({ ...progress, phase: "judge", timeoutMs: 600000, serverNow: 2010000 });
+  assert.equal(intervals.size, 1);
+  assert.equal(countdown.textContent, "9m 50s remaining · 10m 0s request limit");
+  receive({ type: "evaluator_request_complete" });
+  assert.equal(intervals.size, 0);
+  assert.equal(countdown.hidden, true);
+
+  receive({ type: "evaluator_bootstrap", running: true, progress: { ...progress, serverNow: 2060000 } });
+  assert.equal(countdown.textContent, "4m 0s remaining · 5m 0s request limit");
+  tick(300000);
+  assert.equal(countdown.textContent, "Request limit reached · waiting for timeout result…");
+  assert.equal(intervals.size, 0);
+  assert.equal(spinner.hidden, false);
+
+  receive(progress);
+  flatten(root).find((node) => node.textContent === "Stop").click();
+  assert.equal(intervals.size, 0);
+  assert.equal(countdown.hidden, true);
+  receive(progress); // A queued progress event must not restart a stopped timer.
+  assert.equal(intervals.size, 0);
+  receive({ type: "evaluator_queue_complete", stopped: true });
+  assert.equal(spinner.hidden, true);
+
+  receive({ type: "evaluator_queue_started", totalModels: 1 });
+  receive(progress);
+  receive({ type: "evaluator_error", message: "Connection failed" });
+  assert.equal(intervals.size, 0);
+  assert.equal(spinner.hidden, true);
+  receive({ type: "evaluator_queue_started", totalModels: 1 });
+  receive(progress);
+  cleanup();
+  assert.equal(intervals.size, 0);
+});

@@ -145,6 +145,9 @@ async function bootstrap(userId) {
     suites: suiteCatalog(),
     snapshot: snapshotMetadata(),
     running: activeQueues.has(userKey(userId)),
+    progress: activeQueues.get(userKey(userId))?.progress
+      ? { ...activeQueues.get(userKey(userId)).progress, serverNow: Date.now() }
+      : null,
   }, userId);
 }
 
@@ -202,14 +205,21 @@ async function startQueue(payload, userId) {
         hooks: {
           persist: persistRun,
           progress(progress) {
-            send({
+            const payload = {
               type: "evaluator_progress",
               queueIndex,
               totalModels: queueValues.length,
               runId: run.id,
               model: run.target.model,
               ...progress,
-            }, userId);
+              serverNow: Date.now(),
+            };
+            activeQueues.get(key).progress = payload;
+            send(payload, userId);
+          },
+          requestComplete() {
+            delete activeQueues.get(key).progress;
+            send({ type: "evaluator_request_complete", runId: run.id }, userId);
           },
           result(result) {
             send({

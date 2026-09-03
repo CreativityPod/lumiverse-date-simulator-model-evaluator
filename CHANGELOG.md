@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Add a run-status spinner and live per-request timeout countdown for target, judge and calibration calls.
+- Restore the current countdown when reopening the panel; account for elapsed server time and delayed background-tab updates.
+- Clear timers on request completion, Stop, run completion, errors and extension teardown. Respect reduced-motion preferences.
+
 ## 0.2.0
 
 - Replace behavioral keyword heuristics with explicit contextual criteria across all 18 fixtures. Retain deterministic protocol and length checks.

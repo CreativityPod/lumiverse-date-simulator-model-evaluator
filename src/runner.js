@@ -293,13 +293,13 @@ async function checkJudgeCalibration(spindleApi, run, userId, signal, hooks) {
   run.judge.calibration = calibration;
   for (const [index, anchor] of JUDGE_CALIBRATION.entries()) {
     if (signal?.aborted) throw abortError(signal.reason);
-    hooks.progress?.({ phase: "judge", current: index + 1, total: calibration.total, label: `Judge sanity check ${index + 1}/${calibration.total}`, timeoutMs: run.judge.timeoutMs });
     const result = calibrationResult(anchor);
     const messages = judgeMessages(result, anchor.prompt);
     const input = requestInput(run.judge, messages, undefined, userId);
     const attempt = { id: anchor.id, expected: anchor.expected, messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit" };
     calibration.attempts.push(attempt);
     const started = Date.now();
+    hooks.progress?.({ phase: "judge", current: index + 1, total: calibration.total, label: `Judge sanity check ${index + 1}/${calibration.total}`, timeoutMs: run.judge.timeoutMs, requestStartedAt: started });
     try {
       const response = await generateRawWithTimeout(spindleApi, input, { signal, timeoutMs: run.judge.timeoutMs });
       addUsage(run.usage, response?.usage);
@@ -313,6 +313,7 @@ async function checkJudgeCalibration(spindleApi, run, userId, signal, hooks) {
       attempt.error = String(error?.message ?? error);
       if (signal?.aborted) { calibration.status = "interrupted"; run.judge.status = "interrupted"; throw error; }
     } finally {
+      hooks.requestComplete?.();
       attempt.latencyMs = Date.now() - started;
       await hooks.persist?.(run);
     }
@@ -333,11 +334,11 @@ async function runJudge(spindleApi, run, userId, parentSignal, hooks) {
   for (const [index, result] of eligible.entries()) {
     if (parentSignal?.aborted) throw abortError(parentSignal.reason);
     const timeoutMs = run.judge.timeoutMs;
-    hooks.progress?.({ phase: "judge", current: index + 1, total: eligible.length, label: `Contextual grading: ${result.title}`, timeoutMs });
     const messages = judgeMessages(result, run.prompts[result.promptRef]);
     const input = requestInput(run.judge, messages, undefined, userId);
     const attempt = { resultId: result.resultId, messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit", status: "pending" };
     const started = Date.now();
+    hooks.progress?.({ phase: "judge", current: index + 1, total: eligible.length, label: `Contextual grading: ${result.title}`, timeoutMs, requestStartedAt: started });
     run.judge.attempts.push(attempt);
     try {
       const raw = await generateRawWithTimeout(spindleApi, input, { signal: parentSignal, timeoutMs });
@@ -354,6 +355,7 @@ async function runJudge(spindleApi, run, userId, parentSignal, hooks) {
       run.judge.errors.push(`${result.resultId}: ${attempt.error}`);
       if (parentSignal?.aborted) { run.judge.status = "interrupted"; throw error; }
     } finally {
+      hooks.requestComplete?.();
       attempt.latencyMs = Date.now() - started;
       run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);
       await hooks.persist?.(run);
@@ -388,16 +390,6 @@ export async function executeRun(spindleApi, run, options = {}) {
           if (turn > 1) messages.push({ role: "user", content: test.followUps[turn - 2] });
           const promptRef = turn === 1 ? test.id : `${test.id}.r${repetition}.t${turn}`;
           run.prompts[promptRef] = messages.map((message) => ({ ...message }));
-          hooks.progress?.({
-            phase: "target",
-            current: ordinal,
-            total: suite.estimatedTargetCalls,
-            repetition,
-            testId: test.id,
-            label: `${test.title}${test.followUps?.length ? ` · turn ${turn}` : ""}`,
-            timeoutMs,
-          });
-          const requestStarted = Date.now();
           const input = requestInput(run.target, messages, undefined, options.userId);
           const result = {
             resultId: `${test.id}.r${repetition}${turn > 1 ? `.t${turn}` : ""}`, testId: test.id, title: test.title, turn,
@@ -407,6 +399,17 @@ export async function executeRun(spindleApi, run, options = {}) {
             request: { parameters: input.parameters, reasoning: input.reasoning ?? "inherit" },
             response: captureResponse(null), completion: { status: "error" }, score: null,
           };
+          const requestStarted = Date.now();
+          hooks.progress?.({
+            phase: "target",
+            current: ordinal,
+            total: suite.estimatedTargetCalls,
+            repetition,
+            testId: test.id,
+            label: `${test.title}${test.followUps?.length ? ` · turn ${turn}` : ""}`,
+            timeoutMs,
+            requestStartedAt: requestStarted,
+          });
           try {
             const response = await generateRawWithTimeout(spindleApi, input, { signal, timeoutMs });
             result.response = captureResponse(response);
@@ -418,6 +421,8 @@ export async function executeRun(spindleApi, run, options = {}) {
           } catch (error) {
             result.runtime = { status: "error", latencyMs: Date.now() - requestStarted, error: String(error?.message ?? error) };
             run.errors.push(`${test.id} repetition ${repetition}: ${result.runtime.error}`);
+          } finally {
+            hooks.requestComplete?.();
           }
           run.results.push(result);
           run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);

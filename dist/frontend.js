@@ -558,11 +558,13 @@ export function setup(ctx) {
   let history = [];
   let latestBatch = [];
   let running = false;
+  let stopping = false;
   let targetModelHandle = null;
   let judgeModelHandle = null;
   let pendingReportId = "";
   let pendingDeleteId = "";
   let clearingReports = false;
+  let countdownInterval = null;
 
   const removeStyle = ctx.dom.addStyle(`
     .dme-panel { display:flex; flex-direction:column; gap:14px; padding:14px; color:var(--lumiverse-text); }
@@ -591,6 +593,11 @@ export function setup(ctx) {
     .dme-row-meta { color:var(--lumiverse-text-muted); font-size:.76rem; }
     .dme-icon-button { padding:5px 8px; }
     .dme-status { min-height:46px; padding:10px; border-radius:9px; background:color-mix(in srgb,var(--lumiverse-accent,#8c7cf0) 10%,transparent); }
+    .dme-status-heading { display:flex; align-items:flex-start; gap:8px; }
+    .dme-spinner { flex:0 0 auto; width:14px; height:14px; margin-top:2px; border:2px solid color-mix(in srgb,var(--lumiverse-accent,#8c7cf0) 25%,transparent); border-top-color:var(--lumiverse-accent,#8c7cf0); border-radius:50%; animation:dme-spin .9s linear infinite; }
+    .dme-spinner[hidden],.dme-countdown[hidden] { display:none; }
+    .dme-countdown { margin-top:6px; font-size:.8rem; color:var(--lumiverse-text-muted); font-variant-numeric:tabular-nums; }
+    @keyframes dme-spin { to { transform:rotate(360deg); } }
     .dme-progress { height:7px; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--lumiverse-text) 10%,transparent); margin-top:8px; }
     .dme-progress-fill { height:100%; background:var(--lumiverse-accent,#8c7cf0); transition:width .2s ease; }
     .dme-error { color:var(--lumiverse-danger,#e57979); }
@@ -645,7 +652,7 @@ export function setup(ctx) {
     .dme-compare-table { display:flex; flex-direction:column; border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }.dme-compare-row { display:grid; grid-template-columns:minmax(150px,1.5fr) minmax(150px,1.4fr) repeat(3,.55fr) .7fr .4fr; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--lumiverse-border); }.dme-compare-row:last-child { border-bottom:0; }.dme-compare-head { color:var(--lumiverse-text-muted); font-size:.75rem; font-weight:700; }
     .dme-comparison-warning { padding:10px; color:var(--lumiverse-warning,#d5a85f); border:1px solid currentColor; border-radius:8px; }
     @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
-    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}}
+    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}}
   `);
   cleanups.push(removeStyle);
 
@@ -761,12 +768,23 @@ export function setup(ctx) {
 
   const runSection = element("section", "dme-section");
   const runTitle = element("h3", "", "Run status");
-  const runStatus = element("div", "dme-status", "Idle. Choose a model or build a comparison queue.");
+  const runStatus = element("div", "dme-status");
+  const statusHeading = element("div", "dme-status-heading");
+  const spinner = element("span", "dme-spinner");
+  spinner.hidden = true;
+  spinner.setAttribute("aria-hidden", "true");
+  const statusText = element("div", "", "Idle. Choose a model or build a comparison queue.");
+  statusText.setAttribute("role", "status");
+  statusHeading.append(spinner, statusText);
+  const countdown = element("div", "dme-countdown");
+  countdown.hidden = true;
+  // Do not announce a changing second count over the screen reader's status text.
+  countdown.setAttribute("aria-live", "off");
   const progress = element("div", "dme-progress");
   const progressFill = element("div", "dme-progress-fill");
   progressFill.style.width = "0%";
   progress.appendChild(progressFill);
-  runStatus.appendChild(progress);
+  runStatus.append(statusHeading, countdown, progress);
   const stopButton = button("Stop", "dme-danger");
   stopButton.disabled = true;
   runSection.append(runTitle, runStatus, stopButton);
@@ -949,17 +967,59 @@ export function setup(ctx) {
 
   function setRunning(value) {
     running = value;
+    spinner.hidden = !value;
+    if (!value) { stopping = false; stopCountdown(); }
     runNowButton.disabled = value;
     addButton.disabled = value;
-    stopButton.disabled = !value;
+    stopButton.disabled = !value || stopping;
     renderQueue();
     renderHistory();
   }
 
   function setStatus(text, percent = null, error = false) {
-    runStatus.firstChild && runStatus.removeChild(runStatus.firstChild);
-    runStatus.insertBefore(element("div", error ? "dme-error" : "", text), progress);
+    statusText.textContent = text;
+    statusText.className = error ? "dme-error" : "";
     if (percent != null) progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  }
+
+  function stopCountdown() {
+    if (countdownInterval !== null) clearInterval(countdownInterval);
+    countdownInterval = null;
+    countdown.hidden = true;
+    countdown.textContent = "";
+  }
+
+  function startCountdown(payload) {
+    stopCountdown();
+    const timeoutMs = Number(payload.timeoutMs);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
+    const startedAt = Number.isFinite(payload.requestStartedAt) ? payload.requestStartedAt : Date.now();
+    // Use server-relative elapsed time when available, even if the browser's clock differs.
+    const serverNow = Number.isFinite(payload.serverNow) ? payload.serverNow : Date.now();
+    const elapsedMs = Math.max(0, serverNow - startedAt);
+    const deadline = Date.now() + Math.max(0, timeoutMs - elapsedMs);
+    const update = () => {
+      // Derive from the deadline, so background-tab throttling does not slow time.
+      const remainingMs = Math.min(timeoutMs, Math.max(0, deadline - Date.now()));
+      countdown.textContent = remainingMs > 0
+        ? `${formatDuration(Math.ceil(remainingMs / 1000) * 1000)} remaining · ${formatDuration(timeoutMs)} request limit`
+        : "Request limit reached · waiting for timeout result…";
+      if (remainingMs === 0 && countdownInterval !== null) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+    };
+    countdown.hidden = false;
+    update();
+    if (Date.now() < deadline) countdownInterval = setInterval(update, 1000);
+  }
+
+  function showProgress(payload) {
+    if (stopping) return;
+    const local = payload.total ? payload.current / payload.total : 0;
+    const overall = ((payload.queueIndex ?? 0) + local) / Math.max(1, payload.totalModels ?? 1);
+    setStatus(`${payload.model} · ${payload.phase === "judge" ? "Judge" : `Test ${payload.current}/${payload.total}`} · ${payload.label}`, overall * 100);
+    startCountdown(payload);
   }
 
   function launch(items) {
@@ -1029,7 +1089,7 @@ export function setup(ctx) {
   runNowButton.addEventListener("click", () => launch([currentTarget()]));
   runSelectedButton.addEventListener("click", () => launch(queue));
   clearButton.addEventListener("click", () => { queue = []; renderQueue(); saveConfig(); });
-  stopButton.addEventListener("click", () => { stopButton.disabled = true; setStatus("Stopping the current test…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
+  stopButton.addEventListener("click", () => { stopping = true; stopButton.disabled = true; stopCountdown(); setStatus("Stopping the current test…"); ctx.sendToBackend({ type: "evaluator_stop" }); });
   compareButton.addEventListener("click", () => { if (latestBatch.length) openComparisonReport(ctx, latestBatch); });
   clearReportsButton.addEventListener("click", requestClearReports);
 
@@ -1070,28 +1130,35 @@ export function setup(ctx) {
       renderConnections(saved);
       renderQueue();
       renderHistory();
+      if (payload.running === true) {
+        setRunning(true);
+        if (payload.progress) showProgress(payload.progress);
+        else if (countdownInterval === null) setStatus("Evaluation running · preparing the next request…");
+      }
       if (payload.error) setStatus(`Connection catalog error: ${payload.error}`, 0, true);
       else if (!connections.length) setStatus("No saved LLM connections are available. Add one in Connect, then refresh.", 0, true);
     }
     if (payload?.type === "evaluator_queue_started") {
+      stopping = false;
+      stopCountdown();
       setRunning(true);
       setStatus(`Queue started: ${payload.totalModels} model${payload.totalModels === 1 ? "" : "s"}.`, 0);
     }
     if (payload?.type === "evaluator_run_started") {
+      stopCountdown();
       setStatus(`Model ${payload.queueIndex + 1} of ${payload.totalModels}: ${payload.run.target.model}`, 0);
     }
     if (payload?.type === "evaluator_progress") {
-      const local = payload.total ? payload.current / payload.total : 0;
-      const overall = ((payload.queueIndex ?? 0) + local) / Math.max(1, payload.totalModels ?? 1);
-      const timeout = payload.timeoutMs ? ` · ${formatDuration(payload.timeoutMs)} limit` : "";
-      setStatus(`${payload.model} · ${payload.phase === "judge" ? "Judge" : `Test ${payload.current}/${payload.total}`} · ${payload.label}${timeout}`, overall * 100);
+      showProgress(payload);
     }
+    if (payload?.type === "evaluator_request_complete") stopCountdown();
     if (payload?.type === "evaluator_run_complete") {
+      stopCountdown();
       latestBatch.push(payload.run);
       history = [payload.run, ...history.filter((item) => item.id !== payload.run.id)];
       renderHistory();
     }
-    if (payload?.type === "evaluator_model_rejected") setStatus(payload.message, 0, true);
+    if (payload?.type === "evaluator_model_rejected") { stopCountdown(); setStatus(payload.message, 0, true); }
     if (payload?.type === "evaluator_queue_complete") {
       setRunning(false);
       setStatus(payload.stopped ? `Stopped. ${latestBatch.length} completed report${latestBatch.length === 1 ? "" : "s"} saved.` : `Complete. ${latestBatch.length} report${latestBatch.length === 1 ? "" : "s"} saved.`, 100);
@@ -1134,6 +1201,7 @@ export function setup(ctx) {
   ctx.sendToBackend({ type: "evaluator_bootstrap_request" });
 
   return () => {
+    stopCountdown();
     try { targetModelHandle?.destroy(); } catch { /* best effort */ }
     try { judgeModelHandle?.destroy(); } catch { /* best effort */ }
     for (const handle of mounted.reverse()) {

@@ -1,6 +1,6 @@
 # Date Simulator Model Evaluator
 
-Version **0.2.0** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
+Version **0.2.1** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
 
 ## Scoring
 
@@ -63,6 +63,8 @@ The full prompt plus requested output must fit the loaded model's context window
 Independent judge mode rejects the same exact model ID even across different connections. It cannot detect aliases, related fine-tunes or shared model families. Choose a different model family where practical and review domain-specific examples before trusting rankings. See [judge validation guidance](docs/JUDGE_VALIDATION.md).
 
 ## Reports and stored evidence
+
+Run status includes an activity spinner and a live countdown for the current target, judge or calibration request. The countdown uses that request's configured timeout, resets for the next request, and resumes from elapsed time when reopening the panel. It shows the remaining request allowance, not an estimated completion time. Animation respects reduced-motion preferences.
 
 Reports include mechanical and semantic findings, exact evidence excerpts or explicitly reasoned absence judgments, uncertainty, per-family assessment coverage, completion diagnostics, raw target/judge responses, submitted parameters, full target conversations, and judge sanity results. Invalid JSON, missing or duplicate criteria, invalid ratings and fabricated evidence excerpts reject that fixture's entire judge result.
 
