@@ -9,11 +9,37 @@ import {
   readinessPresentation,
   scoreBand,
   scoreDistribution,
+  comparisonKey,
+  resultVerdict,
 } from "../src/frontend.js";
 
 test("uses a reusable chart icon", () => {
   assert.match(EVALUATOR_ICON_SVG, /M4 19V9/);
   assert.match(EVALUATOR_ICON_SVG, /M22 19V3/);
+});
+
+test("comparisons include scorer, rubric, provider parameters and independent judge settings", () => {
+  const base = { schemaVersion: 2, suite: { id: "quick", benchmarkVersion: "2.0.0" }, snapshot: { fingerprint: "abc" }, aggregate: { scoringVersion: "2.0.0" }, target: { parameters: { top_p: 0.9, top_k: 20 } }, judge: { enabled: true, model: "judge", maxTokens: 8192 } };
+  const reordered = structuredClone(base);
+  reordered.target.parameters = { top_k: 20, top_p: 0.9 };
+  assert.equal(comparisonKey(base), comparisonKey(reordered));
+  for (const mutate of [
+    (run) => { run.schemaVersion = 1; },
+    (run) => { run.aggregate.scoringVersion = "old"; },
+    (run) => { run.judge.maxTokens = 2400; },
+    (run) => { run.target.parameters.top_p = 0.5; },
+    (run) => { run.judge.reasoning = "high"; },
+  ]) {
+    const changed = structuredClone(base); mutate(changed);
+    assert.notEqual(comparisonKey(base), comparisonKey(changed));
+  }
+});
+
+test("report badges cannot turn absent semantic evidence into pass or failure", () => {
+  const result = { resultId: "one", runtime: { status: "success" }, score: { passed: true, assertions: [{ verdict: "pass" }] }, criteria: [{ id: "behavior" }] };
+  assert.equal(resultVerdict(result, { schemaVersion: 2 }), "inconclusive");
+  assert.equal(resultVerdict(result, { schemaVersion: 2, judge: { items: [{ id: "one", criteria: [{ id: "behavior", verdict: "uncertain" }] }] } }), "inconclusive");
+  assert.equal(resultVerdict(result, { schemaVersion: 2, judge: { items: [{ id: "one", criteria: [{ id: "behavior", verdict: "fail" }] }] } }), "fail");
 });
 
 test("presents hard readiness outcomes independently from prose scores", () => {
@@ -106,5 +132,5 @@ test("overview renders counted markers, a separate mean marker, and Not tested l
   assert.equal(nodes.find((node) => node.className === "dme-score-mean").style.left, "80%");
   assert.ok(nodes.some((node) => node.textContent === "4 results at 100"));
   assert.ok(nodes.some((node) => node.textContent === "– Not tested"));
-  assert.ok(nodes.some((node) => node.textContent === "Score distribution across completed tests"));
+  assert.ok(nodes.some((node) => node.textContent === "Mechanical score distribution across completed tests"));
 });

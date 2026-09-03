@@ -1,5 +1,7 @@
 # Headless evaluator UI and graphical report specification
 
+> Historical design reference. Implemented 0.2.0 behavior and current call counts are documented in [README](../README.md) and [CHANGELOG](../CHANGELOG.md); this document also contains future proposals.
+
 ## 1. Drawer workflow
 
 The persistent evaluator drawer is the control center. It must not require an active chat.

@@ -30,9 +30,9 @@ for (const field of ["description", "post_history_instructions", "first_mes", "m
 
 const normalize = (value) => String(value).replace(/\r\n?/g, "\n").trim();
 const snapshot = {
-  schemaVersion: 1,
-  snapshotVersion: "date-simulator-v1.5.5-headless.1",
-  compilerVersion: "1.0.0",
+  schemaVersion: 2,
+  snapshotVersion: "date-simulator-v1.5.5-headless.2",
+  compilerVersion: "2.0.0",
   source: {
     name: data.name,
     creator: data.creator,
@@ -42,6 +42,9 @@ const snapshot = {
     sha256: sourceSha256,
   },
   description: normalize(data.description),
+  personality: normalize(data.personality ?? ""),
+  scenario: normalize(data.scenario ?? ""),
+  characterBook: data.character_book?.entries ?? [],
   postHistoryInstructions: normalize(data.post_history_instructions),
   firstMessage: normalize(data.first_mes),
   alternateGreetings: (data.alternate_greetings ?? []).map(normalize),

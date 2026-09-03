@@ -34,7 +34,7 @@ export function resolveCardMacros(source, { active = false, savedCase = "INACTIV
   return normalizeText(resolved);
 }
 
-export function cardSystemPrompt({ active = false, savedCase = "INACTIVE" } = {}) {
+export function cardSystemPrompt({ active = false, savedCase = "INACTIVE", command = "" } = {}) {
   const description = resolveCardMacros(DATE_SIMULATOR_SNAPSHOT.description, { active, savedCase });
   const postHistory = resolveCardMacros(DATE_SIMULATOR_SNAPSHOT.postHistoryInstructions, {
     active,
@@ -43,8 +43,20 @@ export function cardSystemPrompt({ active = false, savedCase = "INACTIVE" } = {}
   return [
     `# Canonical headless character snapshot\nSnapshot: ${DATE_SIMULATOR_SNAPSHOT.snapshotVersion}\nYou are Date Simulator. Follow the character card below exactly. Benchmark User alone controls the male participant.`,
     description,
+    resolveCardMacros(DATE_SIMULATOR_SNAPSHOT.personality, { active, savedCase }),
+    resolveCardMacros(DATE_SIMULATOR_SNAPSHOT.scenario, { active, savedCase }),
+    ...headlessBookEntries(command).map((entry) => resolveCardMacros(entry.content, { active, savedCase })),
+    ...(active ? [] : [`# Illustrative card examples (not current case facts)\n${resolveCardMacros(DATE_SIMULATOR_SNAPSHOT.messageExample, { active, savedCase })}`]),
     postHistory,
   ].join("\n\n");
+}
+
+export function headlessBookEntries(command) {
+  return (DATE_SIMULATOR_SNAPSHOT.characterBook ?? []).filter((entry) => entry.enabled !== false && (
+    entry.constant || (entry.keys ?? []).some((key) => entry.use_regex
+      ? new RegExp(key, entry.case_sensitive ? "" : "i").test(command)
+      : entry.case_sensitive ? command.includes(key) : command.toLowerCase().includes(key.toLowerCase()))
+  )).sort((a, b) => (a.insertion_order ?? 0) - (b.insertion_order ?? 0));
 }
 
 function cloneMessages(messages) {
@@ -62,7 +74,7 @@ export function compileBenchmark(test) {
   const active = test.phase === "active";
   const messages = [{
     role: "system",
-    content: cardSystemPrompt({ active, savedCase: test.savedCase ?? "INACTIVE" }),
+    content: cardSystemPrompt({ active, savedCase: test.savedCase ?? "INACTIVE", command: (test.messages ?? []).filter((message) => message.role === "user").at(-1)?.content ?? "" }),
   }];
   if (test.includeGreeting) {
     messages.push({ role: "assistant", content: DATE_SIMULATOR_SNAPSHOT.firstMessage });
@@ -78,5 +90,6 @@ export function snapshotMetadata() {
     fingerprint: DATE_SIMULATOR_SNAPSHOT.fingerprint,
     sourceSha256: DATE_SIMULATOR_SNAPSHOT.source.sha256,
     characterVersion: DATE_SIMULATOR_SNAPSHOT.source.characterVersion,
+    promptPolicy: "headless.2: description, personality, scenario, phase-gated examples, latest-user-command book entries, post-history instructions; no host chat, lorebook recursion, or extensions",
   };
 }

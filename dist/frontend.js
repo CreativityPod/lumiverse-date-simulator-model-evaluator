@@ -85,8 +85,41 @@ export function formatDuration(milliseconds) {
   return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
 }
 
-function scoreValue(family) {
+function scoreValue(family, run) {
+  if (run?.schemaVersion >= 2) return family?.subjectiveScore ?? null;
   return family?.subjectiveScore ?? family?.objectiveScore ?? null;
+}
+
+export function comparisonKey(run) {
+  const canonical = (value) => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+    return value;
+  };
+  const settings = (value = {}) => ({
+    temperature: value.temperature, maxTokens: value.maxTokens, reasoning: value.reasoning,
+    parameters: value.parameters, tokenParameter: value.tokenParameter, timeoutMs: value.timeoutMs,
+    evaluationMode: value.evaluationMode,
+  });
+  return JSON.stringify(canonical({
+    schema: run.schemaVersion ?? 1, snapshot: run.snapshot?.fingerprint, compiler: run.snapshot?.compilerVersion,
+    suite: run.suite, scorer: run.aggregate?.scoringVersion, target: settings(run.target),
+    judge: run.judge?.enabled ? {
+      provider: run.judge.provider, connectionId: run.judge.connectionId, model: run.judge.model,
+      official: run.judge.official, rubric: run.judge.rubricVersion, calibrate: run.judge.calibrate, settings: settings(run.judge),
+    } : null,
+  }));
+}
+
+export function resultVerdict(result, run) {
+  if (result.runtime?.status !== "success") return "inconclusive";
+  if (!(run?.schemaVersion >= 2)) return result.score?.passed == null ? "inconclusive" : result.score.passed ? "pass" : "fail";
+  const judged = run.judge?.items?.find((item) => item.id === result.resultId)?.criteria ?? [];
+  const expected = result.criteria ?? [];
+  const findings = [...(result.score?.assertions ?? []), ...judged];
+  if (findings.some((item) => item.verdict === "fail")) return "fail";
+  if (judged.length !== expected.length || !findings.length || findings.some((item) => item.verdict !== "pass")) return "inconclusive";
+  return "pass";
 }
 
 export function gatePresentation(run, gate) {
@@ -228,18 +261,31 @@ function reportEnvironment(run) {
     ["Provider", run.target.provider],
     ["Model", run.target.model],
     ["Suite", `${run.suite.name} · ${run.suite.repetitions} repetition${run.suite.repetitions === 1 ? "" : "s"}`],
-    ["Temperature", String(run.target.temperature)],
+    ["Temperature", run.target.temperature == null ? "Provider default" : String(run.target.temperature)],
+    ["Evaluation mode", run.target.evaluationMode || "Legacy"],
+    ["Timeout", formatDuration(run.target.timeoutMs ?? 180000)],
+    ["Output parameter", run.target.tokenParameter || "max_tokens"],
+    ["Additional parameters", JSON.stringify(run.target.parameters ?? {})],
+    ["Benchmark / scorer", `${run.suite.benchmarkVersion ?? "Legacy"} / ${run.aggregate?.scoringVersion ?? "Legacy"}`],
     ["Maximum output", `${run.target.maxTokens} tokens`],
     ["Reasoning", run.target.reasoning],
     ["Snapshot", run.snapshot.snapshotVersion],
     ["Snapshot fingerprint", run.snapshot.fingerprint],
     ["Source SHA-256", run.snapshot.sourceSha256],
     ["Judge", run.judge?.enabled ? `${run.judge.provider} / ${run.judge.model} · ${run.judge.status}` : "Deterministic only"],
+    ["Judge settings", run.judge?.enabled ? JSON.stringify({ temperature: run.judge.temperature ?? "provider default", maxTokens: run.judge.maxTokens, timeoutMs: run.judge.timeoutMs, reasoning: run.judge.reasoning, parameters: run.judge.parameters }) : "Not assessed"],
+    ["Judge sanity check", run.judge?.calibration ? `${run.judge.calibration.status} · ${run.judge.calibration.passed}/${run.judge.calibration.total}` : "Not run"],
+    ["Judge independence", run.judge?.enabled ? run.judge.official ? "Different model ID enforced; aliases and shared model families require review" : "Exploratory; self-judging allowed" : "No semantic grading"],
     ["Duration", formatDuration(run.durationMs)],
     ["Tokens", `${run.usage?.inputTokens ?? 0} in · ${run.usage?.outputTokens ?? 0} out`],
   ];
   for (const [label, value] of values) {
     grid.append(element("dt", "", label), element("dd", "", value || "—"));
+  }
+  if (run.judge?.calibration || run.judge?.errors?.length) {
+    const diagnostic = element("details", "dme-raw");
+    diagnostic.append(element("summary", "", "Judge calibration and errors"), element("pre", "dme-raw-text", JSON.stringify({ calibration: run.judge.calibration, errors: run.judge.errors }, null, 2)));
+    grid.append(element("dt", "", "Judge diagnostics"), diagnostic);
   }
   return grid;
 }
@@ -251,20 +297,24 @@ export function overviewReport(run) {
   const hero = element("section", `dme-report-hero dme-report-${readiness.state}`);
   hero.append(
     verdictBadge(readiness.state, readiness.label),
-    element("p", "", `Completed ${aggregate.completedTests ?? 0} target calls with ${aggregate.runtimeErrors ?? 0} provider/runtime errors.`),
+    element("p", "", `Completed ${aggregate.completedTests ?? 0}/${run.suite?.targetCalls ?? aggregate.attemptedTests ?? 0} target calls · ${aggregate.incompleteTests ?? 0} incomplete (${aggregate.truncatedTests ?? 0} truncated, ${aggregate.emptyTests ?? 0} empty) · ${aggregate.runtimeErrors ?? 0} errors.`),
   );
 
   const scoreGrid = element("section", "dme-score-grid");
   for (const [family, label] of [["date_simulator", "Date Simulator"], ["roleplay", "Roleplay"], ["writing", "Creative writing"]]) {
     const data = aggregate.families?.[family] ?? {};
-    const value = scoreValue(data);
+    const value = run.schemaVersion >= 2 && family === "date_simulator" ? data.behaviorScore : scoreValue(data, run);
     const band = scoreBand(value);
     const card = element("article", "dme-score-card");
     card.append(
       element("span", "dme-score-label", label),
       element("strong", "dme-score-number", value == null ? "—" : `${value}`),
       element("span", `dme-score-band dme-${band.state}`, band.label),
-      element("span", "dme-hint", data.subjectiveScore != null ? "Independent judge score" : "Objective checks only"),
+      element("span", "dme-hint", run.schemaVersion >= 2
+        ? family === "date_simulator" ? "Semantic requirements met (assessed criteria only)" : "Contextual quality rating (assessed criteria only)"
+        : "Legacy score; includes keyword-based checks"),
+      element("span", "dme-hint", run.schemaVersion >= 2
+        ? `Behavior ${data.behaviorCoverage?.assessed ?? 0}/${data.behaviorCoverage?.total ?? 0} · Quality ${data.qualityCoverage?.assessed ?? 0}/${data.qualityCoverage?.total ?? 0} assessed` : "Not comparable to version 2 scoring"),
     );
     scoreGrid.appendChild(card);
   }
@@ -280,28 +330,34 @@ export function overviewReport(run) {
     gateGrid.appendChild(row);
   }
   gates.appendChild(gateGrid);
-  gates.appendChild(element("p", "dme-hint", "Not tested: no test was run. Inconclusive: no usable verdict. Scores average completed, scored tests only."));
+  gates.appendChild(element("p", "dme-hint", "Not tested: no test was run. Inconclusive: no usable verdict. A pass requires all associated criteria to pass. Incomplete or ungraded requirements cannot pass a gate."));
 
   const profiles = element("section", "dme-report-section");
   profiles.appendChild(element("h3", "", "Capability profile"));
   profiles.append(
-    createBar("Date Simulator objective", aggregate.families?.date_simulator?.objectiveScore, "Protocol compliance and deterministic checks"),
-    createBar("Roleplay", scoreValue(aggregate.families?.roleplay), aggregate.families?.roleplay?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
-    createBar("Creative writing", scoreValue(aggregate.families?.writing), aggregate.families?.writing?.subjectiveScore != null ? "Independent rubric" : "Objective constraints only"),
+    createBar("Date Simulator protocol", aggregate.families?.date_simulator?.objectiveScore, "Mechanical format checks on completed outputs"),
+    createBar("Roleplay task compliance", aggregate.families?.roleplay?.behaviorScore, "Semantic requirements; separate from prose quality"),
+    createBar("Writing task compliance", aggregate.families?.writing?.behaviorScore, "Semantic requirements; separate from prose quality"),
+    createBar("Roleplay", scoreValue(aggregate.families?.roleplay, run), aggregate.families?.roleplay?.subjectiveScore != null ? "Independent rubric" : "Quality not assessed"),
+    createBar("Creative writing", scoreValue(aggregate.families?.writing, run), aggregate.families?.writing?.subjectiveScore != null ? "Independent rubric" : "Quality not assessed"),
   );
   const distribution = element("section", "dme-report-section");
-  distribution.appendChild(element("h3", "", "Score distribution across completed tests"));
-  distribution.appendChild(element("p", "dme-hint", "Each result is one completed test attempt, including repetitions. Numbered circles count results at each score; the diamond marks the mean (average). Median is the middle score; range is lowest–highest. This shows variation across tests, not repeat-run reliability."));
+  distribution.appendChild(element("h3", "", "Mechanical score distribution across completed tests"));
+  distribution.appendChild(element("p", "dme-hint", "These are protocol and length checks, not semantic quality. Each result is one completed test attempt, including repetitions. Numbered circles count results at each score; the diamond marks the mean (average). Median is the middle score; range is lowest–highest. This shows variation across tests, not repeat-run reliability."));
   distribution.append(
     scoreDistributionStrip(run, "date_simulator", "Date Simulator objective"),
     scoreDistributionStrip(run, "roleplay", "Roleplay objective"),
     scoreDistributionStrip(run, "writing", "Writing objective"),
   );
   root.append(hero, scoreGrid, gates, profiles, distribution);
+  if (run.schemaVersion >= 2) {
+    root.appendChild(element("p", "dme-hint", "LLM judgments are estimates, not human validation. Inspect evidence, compare paraphrases and failures, and calibrate your chosen judge on the supplied review corpus before relying on rankings. Inherited connection settings and server defaults can affect comparability."));
+    if (!run.judge?.enabled || run.judge.status !== "complete") root.appendChild(element("p", "dme-comparison-warning", `Semantic grading: ${run.judge?.status ?? "disabled"}. Unassessed criteria are excluded from percentages and remain visible in coverage.`));
+  }
   return root;
 }
 
-function evidenceReport(run, family) {
+export function evidenceReport(run, family) {
   const root = element("div", "dme-report-view");
   const results = (run.results ?? []).filter((result) => result.family === family);
   if (!results.length) {
@@ -311,17 +367,15 @@ function evidenceReport(run, family) {
   for (const result of results) {
     const details = element("details", "dme-result");
     const summary = element("summary", "dme-result-summary");
-    const verdict = result.runtime?.status !== "success"
-      ? "inconclusive"
-      : result.score?.passed ? "pass" : "fail";
+    const verdict = resultVerdict(result, run);
     summary.append(
       verdictBadge(verdict),
-      element("span", "dme-result-title", `${result.testId} · ${result.title}`),
+      element("span", "dme-result-title", `${result.testId} · ${result.title} · repetition ${result.repetition ?? 1}${result.turn ? ` · turn ${result.turn}` : ""}`),
       element("span", "dme-result-score", result.score?.score == null ? "—" : `${result.score.score}`),
     );
     const body = element("div", "dme-result-body");
     if (result.runtime?.status !== "success") {
-      body.appendChild(element("p", "dme-error", result.runtime?.error || "Provider/runtime error"));
+      body.appendChild(element("p", "dme-error", result.runtime?.error || result.completion?.detail || "Provider/runtime error"));
     }
     for (const item of result.score?.assertions ?? []) {
       const finding = element("article", "dme-finding");
@@ -332,19 +386,37 @@ function evidenceReport(run, family) {
       body.appendChild(finding);
     }
     const judgeItem = run.judge?.items?.find((item) => item.id === result.resultId);
-    if (judgeItem) {
+    if (run.schemaVersion >= 2) {
+      for (const criterion of result.criteria ?? []) {
+        const item = judgeItem?.criteria?.find((entry) => entry.id === criterion.id);
+        const finding = element("article", "dme-finding dme-judge-finding");
+        const heading = element("div", "dme-finding-head");
+        heading.append(verdictBadge(item?.verdict === "uncertain" ? "inconclusive" : item?.verdict ?? "inconclusive", item?.verdict ?? "Not assessed"), element("strong", "", criterion.label));
+        finding.append(heading, element("p", "dme-hint", criterion.instruction));
+        if (item) {
+          finding.appendChild(element("p", "", `${item.rating == null ? "" : `${item.rating}/4 · `}${item.reason}`));
+          finding.appendChild(element("pre", "dme-evidence", `${item.evidenceSource}: ${item.evidence || "Absence assessed across response"}`));
+        }
+        body.appendChild(finding);
+      }
+    } else if (judgeItem) {
       const judge = element("article", "dme-finding dme-judge-finding");
-      judge.append(
-        element("strong", "", `◆ Judge score ${judgeItem.score}`),
-        element("p", "", judgeItem.reason),
-        element("pre", "dme-evidence", judgeItem.evidence),
-      );
-      for (const [dimension, value] of Object.entries(judgeItem.dimensions ?? {})) judge.appendChild(createBar(dimension.replaceAll("_", " "), value));
+      judge.append(element("strong", "", `Legacy judge score ${judgeItem.score}`), element("p", "", judgeItem.reason), element("pre", "dme-evidence", judgeItem.evidence));
       body.appendChild(judge);
     }
     const responseDetails = element("details", "dme-raw");
     responseDetails.append(element("summary", "", "Raw target response"), element("pre", "dme-raw-text", result.response?.content || "No response captured."));
     body.appendChild(responseDetails);
+    for (const [label, value] of [
+      ["Reasoning, finish reason, usage and request parameters", { completion: result.completion, response: { ...result.response, content: undefined }, request: result.request }],
+      ["Exact target conversation", run.prompts?.[result.promptRef]],
+      ["Judge attempts and diagnostics", run.judge?.attempts?.filter((item) => item.resultId === result.resultId)],
+    ]) {
+      if (value == null) continue;
+      const diagnostic = element("details", "dme-raw");
+      diagnostic.append(element("summary", "", label), element("pre", "dme-raw-text", JSON.stringify(value, null, 2)));
+      body.appendChild(diagnostic);
+    }
     details.append(summary, body);
     root.appendChild(details);
   }
@@ -372,11 +444,13 @@ function openRunReport(ctx, run, callbacks = {}) {
   const exportSummary = button("Export summary JSON");
   exportSummary.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-summary.json`, {
     id: run.id,
+    schemaVersion: run.schemaVersion,
+    status: run.status,
     target: run.target,
     suite: run.suite,
     snapshot: run.snapshot,
     aggregate: run.aggregate,
-    judge: run.judge ? { ...run.judge, items: undefined } : null,
+    judge: run.judge ? { ...run.judge, items: undefined, attempts: undefined, calibration: run.judge.calibration ? { ...run.judge.calibration, attempts: undefined } : undefined } : null,
     durationMs: run.durationMs,
     usage: run.usage,
   }));
@@ -418,26 +492,18 @@ function openRunReport(ctx, run, callbacks = {}) {
 function openComparisonReport(ctx, runs) {
   const modal = ctx.ui.showModal({ title: "Model comparison", width: 980, maxHeight: 780, persistent: false });
   const root = element("div", "dme-report dme-comparison");
-  const comparisonKey = (run) => JSON.stringify({
-    snapshot: run.snapshot?.fingerprint,
-    suite: run.suite?.id,
-    temperature: run.target?.temperature,
-    maxTokens: run.target?.maxTokens,
-    reasoning: run.target?.reasoning,
-    judge: run.judge?.enabled ? `${run.judge.model}:${run.judge.rubricVersion}` : "deterministic",
-  });
   const baseline = comparisonKey(runs[0] ?? {});
   const directlyComparable = runs.every((run) => comparisonKey(run) === baseline);
   root.appendChild(element(
     "p",
     directlyComparable ? "dme-report-subtitle" : "dme-comparison-warning",
     directlyComparable
-      ? "Directly comparable settings and benchmark fingerprints. Readiness gates remain separate from prose scores."
+      ? "Recorded settings match. Compare completion and grading coverage before ranking; inherited provider defaults may differ."
       : "Comparison contains different suites, parameters, snapshots, or judges. Rows are shown for inspection but are not directly rank-comparable.",
   ));
   const table = element("div", "dme-compare-table");
   const header = element("div", "dme-compare-row dme-compare-head");
-  for (const label of ["Model", "Readiness", "Date Sim", "Roleplay", "Writing", "Time", "Errors"]) header.appendChild(element("span", "", label));
+  for (const label of ["Model", "Readiness", "Date behavior", "RP quality", "Writing quality", "Complete", "Time"]) header.appendChild(element("span", "", label));
   table.appendChild(header);
   for (const run of runs) {
     const row = element("div", "dme-compare-row");
@@ -445,16 +511,42 @@ function openComparisonReport(ctx, runs) {
     row.append(
       element("strong", "", run.target.model),
       verdictBadge(readiness.state, readiness.label),
-      element("span", "", run.aggregate?.families?.date_simulator?.objectiveScore ?? "—"),
-      element("span", "", scoreValue(run.aggregate?.families?.roleplay) ?? "—"),
-      element("span", "", scoreValue(run.aggregate?.families?.writing) ?? "—"),
+      element("span", "", (run.schemaVersion >= 2 ? run.aggregate?.families?.date_simulator?.behaviorScore : null) ?? "—"),
+      element("span", "", (run.schemaVersion >= 2 ? scoreValue(run.aggregate?.families?.roleplay, run) : null) ?? "—"),
+      element("span", "", (run.schemaVersion >= 2 ? scoreValue(run.aggregate?.families?.writing, run) : null) ?? "—"),
+      element("span", "", `${run.aggregate?.completedTests ?? 0}/${run.suite?.targetCalls ?? "?"}`),
       element("span", "", formatDuration(run.durationMs)),
-      element("span", "", String(run.aggregate?.runtimeErrors ?? 0)),
     );
     table.appendChild(row);
+    const coverage = Object.entries(run.aggregate?.families ?? {}).map(([name, data]) => `${name}: behavior ${data.behaviorCoverage?.assessed ?? "?"}/${data.behaviorCoverage?.total ?? "?"}, quality ${data.qualityCoverage?.assessed ?? "?"}/${data.qualityCoverage?.total ?? "?"}`).join(" · ");
+    table.appendChild(element("p", "dme-hint", `${run.target.model} · ${run.schemaVersion >= 2 ? coverage : "Legacy keyword scoring; open original report for scores"}`));
   }
   root.appendChild(table);
   modal.root.appendChild(root);
+}
+
+function generationControls(grid, prefix, seconds) {
+  const timeoutField = field(`${prefix} timeout (seconds)`, "Increase for slow local inference; Stop remains available.");
+  const timeout = input("number", seconds, { min: 10, max: 1800, step: 1 });
+  timeoutField.slot.appendChild(timeout);
+  const tokenField = field(`${prefix} output parameter`, "Normally max_tokens; choose max_completion_tokens only if your OpenAI-compatible endpoint requires it.");
+  const token = select([{ value: "max_tokens", label: "max_tokens (native adapters translate)" }, { value: "max_completion_tokens", label: "max_completion_tokens" }], "max_tokens");
+  tokenField.slot.appendChild(token);
+  const extraField = field(`${prefix} additional parameters (JSON)`, 'Provider-specific sampling or thinking settings, e.g. {"top_p":0.95} or {"chat_template_kwargs":{"enable_thinking":false}}. Support depends on the connection adapter/server.');
+  const extra = element("textarea", "dme-input");
+  extra.value = "{}";
+  extra.setAttribute("rows", "3");
+  extraField.slot.appendChild(extra);
+  grid.append(timeoutField.wrapper, tokenField.wrapper, extraField.wrapper);
+  return {
+    nodes: [timeout, token, extra],
+    value: () => ({ timeoutMs: Number(timeout.value) * 1000, tokenParameter: token.value, parameters: extra.value || "{}" }),
+    restore(value) {
+      timeout.value = (value.timeoutMs ?? 300000) / 1000;
+      token.value = value.tokenParameter ?? "max_tokens";
+      extra.value = typeof value.parameters === "string" ? value.parameters : JSON.stringify(value.parameters ?? {}, null, 2);
+    },
+  };
 }
 
 export function setup(ctx) {
@@ -581,23 +673,27 @@ export function setup(ctx) {
   const connectionField = field("Connection", "Supplies provider, URL, and stored credentials.");
   const modelField = field("Model", "Request-local override; the Connect tab is untouched.");
   const suiteField = field("Suite");
-  const temperatureField = field("Temperature");
-  const maxTokensField = field("Maximum output tokens");
+  const temperatureField = field("Temperature", "Leave blank to use the provider default; some reasoning models reject this parameter.");
+  const maxTokensField = field("Maximum output tokens", "Reasoning may share this budget. Fit the prompt plus output within the model context window; Date Simulator setup prompts are large. Incomplete outputs remain unscored.");
   const reasoningField = field("Reasoning override");
   const targetConnection = select([], "");
   const suiteSelect = select([
     { value: "quick", label: "Quick · 7 calls" },
-    { value: "standard", label: "Standard · 24 calls" },
-    { value: "full", label: "Full · 54 calls" },
+    { value: "standard", label: "Standard · 30 calls" },
+    { value: "full", label: "Full · 69 calls" },
   ], "quick");
-  const temperatureInput = input("number", 0.8, { min: 0, max: 2, step: 0.1 });
-  const maxTokensInput = input("number", 2000, { min: 400, max: 8000, step: 100 });
+  const temperatureInput = input("number", "", { min: 0, max: 2, step: 0.1 });
+  const maxTokensInput = input("number", 16384, { min: 400, max: 262144, step: 1 });
   const reasoningSelect = select([
     { value: "inherit", label: "Inherit connection" },
     { value: "off", label: "Off" },
+    { value: "auto", label: "Auto effort" },
+    { value: "minimal", label: "Minimal" },
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra high" },
+    { value: "max", label: "Maximum" },
   ], "inherit");
   connectionField.slot.appendChild(targetConnection);
   suiteField.slot.appendChild(suiteSelect);
@@ -605,6 +701,11 @@ export function setup(ctx) {
   maxTokensField.slot.appendChild(maxTokensInput);
   reasoningField.slot.appendChild(reasoningSelect);
   targetGrid.append(connectionField.wrapper, modelField.wrapper, suiteField.wrapper, temperatureField.wrapper, maxTokensField.wrapper, reasoningField.wrapper);
+  const modeField = field("Comparison mode", "Capability: allow enough headroom. Fixed budget: use identical limits across targets. Neither mode retries automatically.");
+  const modeSelect = select([{ value: "capability", label: "Capability" }, { value: "fixed_budget", label: "Fixed output budget" }], "capability");
+  modeField.slot.appendChild(modeSelect);
+  targetGrid.appendChild(modeField.wrapper);
+  const targetAdvanced = generationControls(targetGrid, "Target", 300);
   const targetActions = element("div", "dme-actions");
   const runNowButton = button("Run now", "dme-primary");
   const addButton = button("Add model");
@@ -613,12 +714,16 @@ export function setup(ctx) {
 
   const judgeDetails = element("details", "dme-section");
   const judgeSummary = element("summary", "dme-section-title");
-  judgeSummary.appendChild(element("strong", "", "Optional independent judge"));
+  judgeSummary.appendChild(element("strong", "", "Semantic judge · local or API"));
   judgeDetails.appendChild(judgeSummary);
   const judgeEnabledLabel = element("label", "dme-inline-check");
   const judgeEnabled = input("checkbox", "");
   judgeEnabled.checked = false;
-  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Score roleplay and writing with a separate model. Deterministic Date Simulator gates never depend on it."));
+  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Grade contextual requirements for every test, plus roleplay and writing quality. Without a judge, semantic capability is not assessed. Adds one judge call per completed target response."));
+  const calibrationLabel = element("label", "dme-inline-check");
+  const calibrationEnabled = input("checkbox", "");
+  calibrationEnabled.checked = true;
+  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with six synthetic examples first. Adds six judge calls per run; grading is skipped if any check fails. This checks basic reliability, not human-level calibration."));
   const judgeGrid = element("div", "dme-grid");
   const judgeConnectionField = field("Judge connection");
   const judgeModelField = field("Judge model");
@@ -627,9 +732,20 @@ export function setup(ctx) {
   const officialLabel = element("label", "dme-inline-check");
   const officialJudge = input("checkbox", "");
   officialJudge.checked = true;
-  officialLabel.append(officialJudge, element("span", "", "Official mode: prevent a target from judging itself."));
+  officialLabel.append(officialJudge, element("span", "", "Independent mode: reject identical target/judge model IDs across connections. Check aliases and shared model families yourself."));
   judgeGrid.append(judgeConnectionField.wrapper, judgeModelField.wrapper);
-  judgeDetails.append(judgeEnabledLabel, judgeGrid, officialLabel);
+  const judgeTemperatureField = field("Judge temperature", "Blank uses the provider default. Choose sampling settings appropriate for this model.");
+  const judgeTemperature = input("number", "", { min: 0, max: 2, step: 0.1 });
+  judgeTemperatureField.slot.appendChild(judgeTemperature);
+  const judgeTokensField = field("Judge maximum output tokens", "Includes reasoning on providers that share the output budget.");
+  const judgeTokens = input("number", 8192, { min: 400, max: 262144, step: 1 });
+  judgeTokensField.slot.appendChild(judgeTokens);
+  const judgeReasoningField = field("Judge reasoning");
+  const judgeReasoning = select(["inherit", "off", "auto", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })), "inherit");
+  judgeReasoningField.slot.appendChild(judgeReasoning);
+  judgeGrid.append(judgeTemperatureField.wrapper, judgeTokensField.wrapper, judgeReasoningField.wrapper);
+  const judgeAdvanced = generationControls(judgeGrid, "Judge", 300);
+  judgeDetails.append(judgeEnabledLabel, calibrationLabel, judgeGrid, officialLabel);
 
   const queueSection = element("section", "dme-section");
   const queueTitle = element("div", "dme-section-title");
@@ -721,9 +837,11 @@ export function setup(ctx) {
       provider: connection?.provider ?? "",
       model: modelValue(targetModelHandle),
       suite: suiteSelect.value,
-      temperature: Number(temperatureInput.value),
+      temperature: temperatureInput.value === "" ? null : Number(temperatureInput.value),
       maxTokens: Number(maxTokensInput.value),
       reasoning: reasoningSelect.value,
+      evaluationMode: modeSelect.value,
+      ...targetAdvanced.value(),
     };
   }
 
@@ -732,12 +850,15 @@ export function setup(ctx) {
     return {
       enabled: judgeEnabled.checked,
       official: officialJudge.checked,
+      calibrate: calibrationEnabled.checked,
       connectionId: connection?.id ?? "",
       connectionName: connection?.name ?? "",
       provider: connection?.provider ?? "",
       model: modelValue(judgeModelHandle),
-      reasoning: "low",
-      maxTokens: 2400,
+      reasoning: judgeReasoning.value,
+      temperature: judgeTemperature.value === "" ? null : Number(judgeTemperature.value),
+      maxTokens: Number(judgeTokens.value),
+      ...judgeAdvanced.value(),
     };
   }
 
@@ -847,11 +968,18 @@ export function setup(ctx) {
       setStatus("Choose a saved connection and enter a model ID first.", 0, true);
       return;
     }
+    try {
+      for (const item of [...valid, ...(judgeEnabled.checked ? [currentJudge()] : [])]) {
+        const parsed = typeof item.parameters === "string" ? JSON.parse(item.parameters || "{}") : item.parameters ?? {};
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Parameters must be a JSON object.");
+        if (!Number.isFinite(Number(item.maxTokens)) || Number(item.maxTokens) < 400) throw new Error("Maximum output must be at least 400 tokens.");
+      }
+    } catch (error) { setStatus(`Invalid generation settings: ${error.message}`, 0, true); return; }
     latestBatch = [];
     compareButton.disabled = true;
     setRunning(true);
     setStatus("Starting unattended benchmark queue…", 0);
-    ctx.sendToBackend({ type: "evaluator_run_queue", queue: valid, judge: currentJudge(), timeoutMs: 180000 });
+    ctx.sendToBackend({ type: "evaluator_run_queue", queue: valid, judge: currentJudge() });
   }
 
   function requestDelete(run, afterConfirm = () => {}) {
@@ -889,7 +1017,7 @@ export function setup(ctx) {
 
   targetConnection.addEventListener("change", () => { remountTargetModel(selectedConnection(targetConnection)?.model || ""); saveConfig(); });
   judgeConnection.addEventListener("change", () => { remountJudgeModel(selectedConnection(judgeConnection)?.model || ""); saveConfig(); });
-  for (const node of [suiteSelect, temperatureInput, maxTokensInput, reasoningSelect, judgeEnabled, officialJudge]) node.addEventListener("change", saveConfig);
+  for (const node of [suiteSelect, temperatureInput, maxTokensInput, reasoningSelect, modeSelect, judgeEnabled, officialJudge, calibrationEnabled, judgeTemperature, judgeTokens, judgeReasoning, ...targetAdvanced.nodes, ...judgeAdvanced.nodes]) node.addEventListener("change", saveConfig);
   refreshButton.addEventListener("click", () => ctx.sendToBackend({ type: "evaluator_refresh_connections" }));
   addButton.addEventListener("click", () => {
     const target = currentTarget();
@@ -908,18 +1036,35 @@ export function setup(ctx) {
   cleanups.push(tab.onActivate(() => ctx.sendToBackend({ type: "evaluator_bootstrap_request" })));
   cleanups.push(ctx.onBackendMessage((payload) => {
     if (payload?.type === "evaluator_bootstrap") {
+      if (Array.isArray(payload.suites)) {
+        const selected = suiteSelect.value;
+        suiteSelect.replaceChildren();
+        for (const suite of payload.suites) {
+          const option = element("option", "", `${suite.name} · ${suite.targetCalls} target calls`);
+          option.value = suite.id;
+          suiteSelect.appendChild(option);
+        }
+        suiteSelect.value = selected;
+      }
       connections = Array.isArray(payload.connections) ? payload.connections : [];
       history = Array.isArray(payload.history) ? payload.history : [];
       const saved = payload.config && typeof payload.config === "object" ? payload.config : null;
       if (saved?.target) {
         suiteSelect.value = saved.target.suite || "quick";
-        temperatureInput.value = saved.target.temperature ?? 0.8;
-        maxTokensInput.value = saved.target.maxTokens ?? 2000;
+        temperatureInput.value = saved.target.temperature ?? "";
+        maxTokensInput.value = saved.target.maxTokens ?? 16384;
+        modeSelect.value = saved.target.evaluationMode ?? "capability";
+        targetAdvanced.restore(saved.target);
         reasoningSelect.value = saved.target.reasoning || "inherit";
       }
       if (saved?.judge) {
         judgeEnabled.checked = saved.judge.enabled === true;
         officialJudge.checked = saved.judge.official !== false;
+        calibrationEnabled.checked = saved.judge.calibrate !== false;
+        judgeTokens.value = saved.judge.maxTokens ?? 8192;
+        judgeTemperature.value = saved.judge.temperature ?? "";
+        judgeReasoning.value = saved.judge.reasoning ?? "inherit";
+        judgeAdvanced.restore(saved.judge);
       }
       if (!queue.length && Array.isArray(saved?.queue)) queue = saved.queue;
       renderConnections(saved);

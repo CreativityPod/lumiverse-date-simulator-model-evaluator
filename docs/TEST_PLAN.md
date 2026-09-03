@@ -1,5 +1,7 @@
 # Headless Model Evaluator test plan
 
+> Historical design reference. Implemented 0.2.0 behavior and current call counts are documented in [README](../README.md) and [CHANGELOG](../CHANGELOG.md); this document also contains future proposals.
+
 ## 1. Scope
 
 This plan validates:

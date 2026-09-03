@@ -8,6 +8,7 @@ import {
   resolveCardMacros,
   resolveInactiveBlocks,
   snapshotMetadata,
+  headlessBookEntries,
 } from "../src/compiler.js";
 
 test("bundles the approved canonical Date Simulator v1.5.5 source", () => {
@@ -18,6 +19,21 @@ test("bundles the approved canonical Date Simulator v1.5.5 source", () => {
   );
   assert.match(DATE_SIMULATOR_SNAPSHOT.firstMessage, /1\. \*\*Surprise Me\*\*/);
   assert.equal(snapshotMetadata().fingerprint.length, 64);
+});
+
+test("headless snapshot includes personality, scenario, phase-gated examples and command-gated book entries", () => {
+  const setup = cardSystemPrompt({ active: false });
+  const active = cardSystemPrompt({ active: true, savedCase: "CASE: isolated" });
+  assert.ok(setup.includes(DATE_SIMULATOR_SNAPSHOT.personality));
+  assert.match(setup, /Illustrative card examples/);
+  assert.doesNotMatch(active, /Illustrative card examples/);
+  assert.equal(headlessBookEntries("Ordinary conversation mentioning /debrief").length, 0);
+  assert.equal(headlessBookEntries("/debrief").length, 2);
+  assert.equal(headlessBookEntries("/debrief consent").length, 2);
+  const entry = headlessBookEntries("/debrief")[0];
+  const messages = compileBenchmark({ phase: "active", messages: [{ role: "user", content: "/debrief" }] });
+  assert.ok(messages[0].content.includes(entry.content.trim()));
+  assert.equal(snapshotMetadata().compilerVersion, "2.0.0");
 });
 
 test("resolves inactive-only blocks for setup and removes them for active cases", () => {

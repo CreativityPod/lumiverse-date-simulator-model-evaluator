@@ -67,7 +67,7 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   await frontendHandler({ type: "evaluator_bootstrap_request" }, "user-1");
   const bootstrap = messages.find((payload) => payload.type === "evaluator_bootstrap");
   assert.equal(bootstrap.connections[0].id, "conn-1");
-  assert.deepEqual(Array.from(bootstrap.suites, (suite) => suite.targetCalls), [7, 24, 54]);
+  assert.deepEqual(Array.from(bootstrap.suites, (suite) => suite.targetCalls), [7, 30, 69]);
 
   await frontendHandler({
     type: "evaluator_run_queue",

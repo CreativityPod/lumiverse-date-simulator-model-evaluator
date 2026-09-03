@@ -1,11 +1,11 @@
 {
-  "version": "0.1.3",
+  "version": "0.2.0",
   "name": "Date Simulator Model Evaluator",
   "identifier": "date_simulator_model_evaluator",
   "author": "CreativityPod",
   "github": "https://github.com/CreativityPod/lumiverse-date-simulator-model-evaluator",
   "homepage": "https://github.com/CreativityPod/lumiverse-date-simulator-model-evaluator",
-  "description": "Runs unattended, headless Date Simulator v1.5.5, roleplay, and creative-writing capability benchmarks against connection-local model overrides.",
+  "description": "Headless Date Simulator, roleplay, and writing evaluation with mechanical protocol checks, contextual local/API judges, completion diagnostics, and multi-turn probes.",
   "permissions": [
     "generation",
     "ui_panels"

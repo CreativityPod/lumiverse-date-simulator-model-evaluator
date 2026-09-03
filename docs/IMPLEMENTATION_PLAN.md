@@ -1,5 +1,7 @@
 # Model Evaluator headless implementation plan
 
+> Historical design reference. Implemented 0.2.0 behavior and current call counts are documented in [README](../README.md) and [CHANGELOG](../CHANGELOG.md); this document also contains future proposals.
+
 ## 1. Product objective
 
 Build a fully automatic Lumiverse extension that can compare configured LLMs without creating chats or changing the user's active connection/model. The extension bundles a canonical Date Simulator v1.5.5 instruction snapshot, constructs isolated in-memory conversations, calls the selected model directly, scores the responses, and displays a graphical comparison report.

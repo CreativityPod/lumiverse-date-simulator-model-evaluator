@@ -198,7 +198,7 @@ async function startQueue(payload, userId) {
       const finished = await executeRun(spindle, run, {
         userId,
         signal: controller.signal,
-        timeoutMs: Number(payload?.timeoutMs) || 180_000,
+        timeoutMs: target.timeoutMs,
         hooks: {
           persist: persistRun,
           progress(progress) {

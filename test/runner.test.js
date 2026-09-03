@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CASE_FIELDS } from "../src/scorers.js";
+import { JUDGE_CALIBRATION } from "../src/calibration.js";
 import {
   createRun,
   executeRun,
@@ -10,6 +11,10 @@ import {
   normalizeModelTarget,
   reasoningOverride,
   validateRunRequest,
+  requestInput,
+  captureResponse,
+  classifyCompletion,
+  normalizeParameters,
 } from "../src/runner.js";
 
 const validBody = CASE_FIELDS.map((field) => `${field}: ${field === "CASE" ? "DS-RUN; Date Simulator v1.5.5; Adult Mode" : "populated"}`).join("\n");
@@ -32,6 +37,128 @@ test("normalizes targets, judge settings, and reasoning overrides", () => {
   assert.equal(normalizeModelTarget({ temperature: 9, maxTokens: 2 }).temperature, 2);
   assert.equal(normalizeModelTarget({ temperature: 9, maxTokens: 2 }).maxTokens, 400);
   assert.equal(normalizeJudge({ enabled: true }).enabled, true);
+});
+
+test("exact local and API model IDs, custom parameters, and reasoning budgets are forwarded", () => {
+  for (const [provider, model] of [["custom", "lmstudio/local-model"], ["openai", "z-ai/glm-5.3"], ["openai", "deepseek/deepseek-v4"], ["anthropic", "frontier-model-id"], ["google", "another-frontier-model"]]) {
+    const target = normalizeModelTarget({ connectionId: "saved", provider, model, maxTokens: 65536, temperature: null, timeoutMs: 900000, parameters: '{"top_p":0.95,"chat_template_kwargs":{"enable_thinking":false}}' });
+    const input = requestInput(target, [{ role: "user", content: "test" }]);
+    assert.equal(input.model, model);
+    assert.equal(input.provider, provider);
+    assert.equal(input.parameters.max_tokens, 65536);
+    assert.equal(input.parameters.temperature, undefined);
+    assert.equal(input.parameters.chat_template_kwargs.enable_thinking, false);
+    assert.equal(input.reasoning, undefined);
+    assert.equal(target.timeoutMs, 900000);
+  }
+  const input = requestInput(normalizeModelTarget({ tokenParameter: "max_completion_tokens", maxTokens: 32768, temperature: 0 }), []);
+  assert.equal(input.parameters.max_tokens, undefined);
+  assert.equal(input.parameters.max_completion_tokens, 32768);
+  assert.equal(input.parameters.temperature, 0);
+  for (const parameters of ['[]', '{bad}', { messages: [] }, { model: "other" }, { max_tokens: 1 }, { api_key: "private" }]) {
+    assert.throws(() => normalizeParameters(parameters));
+  }
+});
+
+test("provider completion diagnostics preserve empty, reasoning-only, filtered and truncated results", async () => {
+  let index = 0;
+  const responses = [
+    { content: "A promising but incomplete scene", reasoning: "long analysis", finish_reason: "length", usage: { completion_tokens: 2000 } },
+    { content: "", reasoning: "thoughts", finish_reason: "stop", usage: { completion_tokens: 1200 } },
+    { content: "<think>reasoning with no closing tag", finish_reason: "stop" },
+    { content: "Provider blocked this", finish_reason: "content_filter" },
+    { content: "", finish_reason: "tool_calls", tool_calls: [{ name: "wrong" }] },
+    { content: "<think>some reasoning</think>Okay.", finish_reason: "stop" },
+    { content: "unspecified finish", finish_reason: "unknown_finish" },
+  ];
+  const run = createRun({ connectionId: "c", provider: "custom", model: "local" }, { enabled: false });
+  await executeRun({ generate: { raw: async () => responses[index++] } }, run);
+  assert.deepEqual(run.results.map((result) => result.completion.status), ["truncated", "empty", "empty", "blocked", "tool_calls", "complete", "unknown"]);
+  assert.equal(run.usage.outputTokens, 3200);
+  assert.equal(run.results[0].response.content, responses[0].content);
+  assert.equal(run.results[0].response.reasoning, "long analysis");
+  assert.equal(run.results[0].score, null);
+  assert.equal(run.results[1].response.usage.completion_tokens, 1200);
+  assert.equal(run.results[2].response.rawContent, responses[2].content);
+  assert.equal(run.results[5].response.content, "Okay.");
+  assert.equal(run.aggregate.incompleteTests, 6);
+  assert.equal(run.aggregate.families.roleplay.subjectiveScore, null);
+  assert.equal(classifyCompletion(captureResponse({ content: [{ text: "Hello" }], finish_reason: "end_turn" })).status, "complete");
+});
+
+test("multi-turn fixtures retain actual output and isolate repetitions", async () => {
+  let counter = 0;
+  const run = createRun({ connectionId: "local", provider: "custom", model: "local", suite: "standard" }, { enabled: false });
+  await executeRun({ generate: { raw: async () => ({ content: `actual-output-${++counter}` }) } }, run);
+  assert.equal(counter, 30);
+  const turnTwo = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 1 && item.turn === 2);
+  const turnOne = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 1 && item.turn === 1);
+  assert.equal(run.prompts[turnTwo.promptRef].at(-2).content, turnOne.response.content);
+  const repetitionTwo = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 2 && item.turn === 1);
+  assert.ok(!run.prompts[repetitionTwo.promptRef].some((message) => message.content.startsWith("actual-output-")));
+  assert.equal(run.suite.uniqueFixtures, 12);
+});
+
+test("native reasoning carriers return to the target while remaining hidden from the judge", async () => {
+  const run = createRun({ connectionId: "local", provider: "custom", model: "thinking-model", suite: "standard" }, { enabled: true, calibrate: false, connectionId: "judge", provider: "openai", model: "independent" });
+  const calls = [];
+  await executeRun({ generate: { raw: async (input) => {
+    calls.push(structuredClone({ ...input, signal: undefined }));
+    if (input.connection_id === "judge") return { content: "malformed judge response" };
+    return { content: "A final response.", reasoning: "native private analysis", reasoning_details: [{ type: "reasoning.encrypted", data: "opaque" }], thinking_blocks: [{ type: "thinking", thinking: "native block", signature: "sig" }], thought_signature: "gemini-signature" };
+  } } }, run);
+  const followUp = calls.find((input) => input.connection_id === "local" && input.messages.at(-1).content.startsWith("I time the next"));
+  assert.equal(followUp.messages.at(-2).reasoning_content, "native private analysis");
+  assert.deepEqual(followUp.messages.at(-2).reasoning_details, [{ type: "reasoning.encrypted", data: "opaque" }]);
+  assert.equal(followUp.messages.at(-2).thought_signature, "gemini-signature");
+  assert.ok(calls.filter((input) => input.connection_id === "judge").every((input) => !JSON.stringify(input.messages).includes("native private analysis")));
+});
+
+test("a failed multi-turn start skips dependent turns and keeps planned coverage", async () => {
+  let counter = 0;
+  const run = createRun({ connectionId: "local", provider: "custom", model: "local", suite: "standard" }, { enabled: false });
+  await executeRun({ generate: { raw: async (input) => {
+    counter += 1;
+    if (input.messages.at(-1).content === "/look") return { content: "", finish_reason: "length" };
+    return { content: "A response." };
+  } } }, run);
+  assert.ok(counter < 30);
+  assert.equal(run.aggregate.plannedTests, 30);
+  assert.ok(run.aggregate.unattemptedTests > 0);
+  assert.equal(run.aggregate.families.date_simulator.behaviorCoverage.total, run.suite.coverage.families.date_simulator.behavior);
+});
+
+test("judge calibration checks disagreement before accepting semantic scores", async () => {
+  const run = createRun({ connectionId: "target", provider: "custom", model: "local" }, { enabled: true, connectionId: "judge", provider: "custom", model: "judge" });
+  let judgeCalls = 0;
+  await executeRun({ generate: { raw: async (input) => {
+    if (input.connection_id !== "judge") return { content: responseFor(input.messages) };
+    judgeCalls += 1;
+    return { content: JSON.stringify({ criteria: [{ id: "requirement", verdict: "pass", rating: null, evidenceSource: "absence", evidence: "", reason: "This mock judge always passes." }] }) };
+  } } }, run);
+  assert.equal(judgeCalls, 6);
+  assert.equal(run.judge.status, "calibration_failed");
+  assert.equal(run.judge.calibration.passed, 2);
+  assert.equal(run.judge.items.length, 0);
+  assert.equal(run.aggregate.families.roleplay.subjectiveScore, null);
+});
+
+test("passing calibration permits grading and rejected judge output retains evidence and usage", async () => {
+  const run = createRun({ connectionId: "target", provider: "openai", model: "api-target" }, { enabled: true, connectionId: "judge", provider: "custom", model: "local-judge" });
+  await executeRun({ generate: { raw: async (input) => {
+    if (input.connection_id !== "judge") return { content: responseFor(input.messages) };
+    const candidate = JSON.parse(input.messages.at(-1).content);
+    const anchor = JUDGE_CALIBRATION.find((item) => `calibration.${item.id}` === candidate.id);
+    if (anchor) return { content: JSON.stringify({ criteria: [{ id: "requirement", verdict: anchor.expected, rating: null, evidenceSource: "response", evidence: candidate.response.slice(0, 10), reason: "Mock expected verdict." }] }) };
+    return { content: '{"criteria": [', reasoning: "budget used", finish_reason: "length", usage: { completion_tokens: 3000 } };
+  } } }, run);
+  assert.equal(run.judge.calibration.status, "passed");
+  assert.equal(run.judge.status, "failed");
+  assert.equal(run.judge.attempts.length, 7);
+  assert.equal(run.judge.attempts[0].response.reasoning, "budget used");
+  assert.equal(run.judge.attempts[0].completion.status, "truncated");
+  assert.equal(run.usage.outputTokens, 21000);
+  assert.equal(run.aggregate.families.writing.subjectiveScore, null);
 });
 
 test("hard timeout settles locally and aborts a provider that never responds", async () => {
@@ -134,7 +261,7 @@ test("executes the seven-call Quick suite headlessly with per-request model over
   assert.ok(finished.prompts["DSC-NUM-001"]);
 });
 
-test("batches independent roleplay and writing judge scores without changing deterministic gates", async () => {
+test("grades all fixtures with complete context, independent settings, and validated evidence", async () => {
   let targetCalls = 0;
   let judgeCalls = 0;
   const spindleApi = {
@@ -142,15 +269,15 @@ test("batches independent roleplay and writing judge scores without changing det
       async raw(input) {
         if (input.connection_id === "judge-connection") {
           judgeCalls += 1;
-          const candidates = JSON.parse(input.messages.at(-1).content).candidates;
+          const candidate = JSON.parse(input.messages.at(-1).content);
+          assert.ok(candidate.conversation.length > 0);
+          assert.equal(candidate.model, undefined);
+          assert.equal(candidate.reasoning, undefined);
           return {
             content: JSON.stringify({
-              items: candidates.map((candidate) => ({
-                id: candidate.id,
-                dimensions: Object.fromEntries(candidate.dimensions.map((dimension) => [dimension, 80])),
-                score: 80,
-                evidence: candidate.response.slice(0, 10),
-                reason: "The response follows the brief with controlled voice and action.",
+              criteria: candidate.criteria.map((criterion) => ({
+                id: criterion.id, verdict: "pass", rating: criterion.kind === "quality" ? 3 : null,
+                evidenceSource: "response", evidence: candidate.response.slice(0, 10), reason: "Mock rubric result.",
               })),
             }),
             usage: { total_tokens: 25 },
@@ -172,14 +299,15 @@ test("batches independent roleplay and writing judge scores without changing det
     connectionId: "judge-connection",
     provider: "anthropic",
     model: "judge-model",
+    calibrate: false,
   });
   const finished = await executeRun(spindleApi, run);
   assert.equal(finished.status, "complete");
   assert.equal(targetCalls, 7);
-  assert.equal(judgeCalls, 1);
+  assert.equal(judgeCalls, 7);
   assert.equal(finished.judge.status, "complete");
-  assert.equal(finished.judge.items.length, 2);
-  assert.equal(finished.aggregate.families.roleplay.subjectiveScore, 80);
-  assert.equal(finished.aggregate.families.writing.subjectiveScore, 80);
+  assert.equal(finished.judge.items.length, 7);
+  assert.equal(finished.aggregate.families.roleplay.subjectiveScore, 75);
+  assert.equal(finished.aggregate.families.writing.subjectiveScore, 75);
   assert.equal(finished.aggregate.gates.private_profile, "pass");
 });

@@ -7,7 +7,10 @@ const backendFiles = [
   "generated/date-simulator-v1.5.5.js",
   "compiler.js",
   "scorers.js",
+  "rubrics.js",
   "benchmarks.js",
+  "judging.js",
+  "calibration.js",
   "runner.js",
   "backend.js",
 ];
