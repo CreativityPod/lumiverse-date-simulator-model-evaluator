@@ -1,5 +1,5 @@
 export const BENCHMARK_VERSION = "2.0.0";
-export const JUDGE_RUBRIC_VERSION = "contextual-rubric.2";
+export const JUDGE_RUBRIC_VERSION = "contextual-rubric.3";
 
 const criterion = (id, label, instruction, gate = null, severity = "major", kind = "behavior") => ({
   id, label, instruction, gates: gate ? [gate] : [], severity, kind,

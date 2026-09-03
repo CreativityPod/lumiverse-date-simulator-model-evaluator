@@ -1,6 +1,6 @@
 # Date Simulator Model Evaluator
 
-Version **0.2.1** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
+Version **0.2.2** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
 
 ## Scoring
 
@@ -10,19 +10,21 @@ Three separate results prevent format compliance from being mistaken for intelli
 - **Mechanical checks:** exact capsule structure, protocol markers, sequential numbering and requested word ranges. These checks do not infer behavior from keywords.
 - **Contextual LLM grading:** every fixture has explicit behavioral requirements. Roleplay and writing also have anchored quality ratings from 0 to 4, displayed on a 0–100 scale. The judge receives the complete task conversation and final response, with model identity and native reasoning omitted.
 
-The main Date Simulator score is the percentage of assessed semantic requirements met. The Roleplay and Writing scores are assessed quality ratings. Task compliance is also shown separately. Missing, uncertain or rejected grades never become zeroes or passes; coverage remains visible. Without a judge, semantic behavior and quality remain **Not assessed**.
+The main Date Simulator score shows mechanical protocol compliance, including when no judge is enabled. Semantic behavior is shown separately as the percentage of assessed semantic requirements met. The Roleplay and Writing scores are assessed quality ratings. Task compliance is also shown separately. Missing, uncertain or rejected grades never become zeroes or passes; coverage remains visible. Without a judge, semantic behavior and quality remain **Not assessed**.
 
 A gate passes only when all associated checks pass. A failure affects its own gate, not every gate touched by the fixture. Numbered-question and private-profile failures, and critical Date Simulator violations, cannot be averaged away by prose quality. Quick and Standard omit some gates and cannot establish full readiness.
 
 ## Suites and cost
 
-| Suite | Unique fixtures | Repetitions | Maximum target calls | Maximum judge calls including sanity check |
+| Suite | Unique fixtures | Repetitions | Maximum target calls | Judge calls before retries, including sanity check |
 |---|---:|---:|---:|---:|
 | Quick | 7 | 1 | 7 | 13 |
 | Standard | 12 | 2 | 30 | 36 |
 | Full | 18 | 3 | 69 | 75 |
 
-Judge calls are additional and occur only when enabled. Six synthetic sanity examples run first; the judge must get all six right before grading target responses. A failure is recorded as **calibration_failed**, with raw evidence available in Environment. You can disable the sanity check explicitly for exploratory work. Passing six examples is a basic reliability check, **not human validation**.
+Judge calls are additional and occur only when enabled. Each completed target response is graded first. If a response is malformed or incomplete, usable criterion grades are retained and missing criteria get at most one retry in batches of four. These bounded repair calls are additional to the table above; transport failures do not trigger repair calls.
+
+The optional six-example sanity check runs after grading. Disagreements or invalid answers produce a warning and mark semantic grades provisional; they never block grading or erase usable scores. Passing these synthetic examples is a basic reliability check, **not human validation**.
 
 Standard and Full include live follow-ups using actual model responses: object continuity across intervening dialogue, updated signal observations, number-choice recall, and competing objectives under time pressure. Each repetition starts fresh. A failed or incomplete turn skips its dependent follow-ups; the report retains the planned denominator.
 
@@ -66,13 +68,15 @@ Independent judge mode rejects the same exact model ID even across different con
 
 Run status includes an activity spinner and a live countdown for the current target, judge or calibration request. The countdown uses that request's configured timeout, resets for the next request, and resumes from elapsed time when reopening the panel. It shows the remaining request allowance, not an estimated completion time. Animation respects reduced-motion preferences.
 
-Reports include mechanical and semantic findings, exact evidence excerpts or explicitly reasoned absence judgments, uncertainty, per-family assessment coverage, completion diagnostics, raw target/judge responses, submitted parameters, full target conversations, and judge sanity results. Invalid JSON, missing or duplicate criteria, invalid ratings and fabricated evidence excerpts reject that fixture's entire judge result.
+Reports include mechanical and semantic findings, exact evidence excerpts or explicitly reasoned absence judgments, uncertainty, per-family assessment coverage, completion diagnostics, raw target/judge responses, submitted parameters, full target conversations, and judge sanity results. The parser accepts JSON surrounded by prose or fences and retains complete criterion objects from truncated JSON. Unknown/duplicate criteria or invalid ratings are excluded individually; valid grades survive. Quality scores derive from the explicit 0–4 rating, and null remains uncertain. Reasons are required. Quotes are optional diagnostics: quotations not found verbatim are labeled unverified, rather than erasing the grade.
 
 Reasoning-only and truncated responses retain usage even when no final answer was generated. Leading `<think>`, `<thinking>` and `<reasoning>` blocks are separated when returned as plain content; original text remains available. Native reasoning carriers/signatures are retained for target continuations and excluded from judge input. Missing provider finish metadata is disclosed; nonempty text without it is accepted as complete.
 
 Comparison keys include benchmark, snapshot, compiler, scorer, rubric, output budget, sampler parameters, reasoning and judge configuration. Different configurations and legacy reports are flagged. Connection/server defaults inherited at execution time are not fully captured by the extension; set explicit values or record those defaults when reproducibility matters.
 
 Version 1 reports keep their stored scores and display a legacy label. They are not re-scored or directly ranked against version 2. Mechanical score distributions describe heterogeneous test attempts, not semantic quality, confidence intervals or statistical repeatability.
+
+Use **Grade saved responses** (or **Regrade saved responses**) in a version 2 report to grade its completed target outputs with the judge currently selected in Evaluator settings. This makes judge calls only and saves a separate report with a link to its source; it never reruns the target model or changes the original report. The new report's token usage counts only its new judge calls. Failed/incomplete target responses cannot be recovered by regrading.
 
 Use **Export full evidence** for review and **Export summary JSON** for a compact record. **Delete this report** and **Clear all reports** retain their explicit confirmation flows and preserve saved evaluator settings. Deletion is disabled during runs.
 
@@ -92,7 +96,7 @@ Snapshot `date-simulator-v1.5.5-headless.2` includes description, personality, s
 npm run check
 ```
 
-No dependencies are required. The command regenerates the snapshot, builds `dist/`, runs the automated suite, and validates the Spindle package. The committed distribution files are the files Lumiverse loads. Tests use a fake Spindle generation host; they verify request routing, settings, scoring, storage, UI behavior and failure handling without paid or local inference calls. Live performance and judge reliability still need validation with the configured models.
+No dependencies are required. The command regenerates the snapshot, builds `dist/`, runs the automated suite, and validates the Spindle package. The committed distribution files are the files Lumiverse loads. Tests use a fake Spindle generation host; they verify request routing, settings, scoring, storage, UI behavior and failure handling without paid or local inference calls. Most tests use simulated providers. Local LM Studio smoke checks additionally exercise real Qwen grading output; this does not establish agreement across all model families or providers. Judge reliability still needs validation with the configured models.
 
 [Release notes](CHANGELOG.md) · [Judge validation](docs/JUDGE_VALIDATION.md)
 

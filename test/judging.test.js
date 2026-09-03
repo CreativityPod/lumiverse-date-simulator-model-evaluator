@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { getSuite } from "../src/benchmarks.js";
+import { compileBenchmark } from "../src/compiler.js";
 import { judgeMessages, parseJudgeJson, validateJudgeResult } from "../src/judging.js";
 import { JUDGE_CALIBRATION, calibrationResult } from "../src/calibration.js";
 
@@ -30,24 +33,50 @@ test("derives quality and behavior scores solely from validated criteria", () =>
   assert.deepEqual(item.criteria[0].gates, ["user_agency"]);
 });
 
-test("rejects malformed, missing, duplicate, invented and contradictory judgments", () => {
-  const mutations = [
+test("retains valid grades when another criterion is missing or malformed", () => {
+  for (const change of [
     (data) => data.criteria.pop(),
-    (data) => { data.criteria[1].id = "action"; },
+    (data) => { data.criteria[1].rating = 99; },
     (data) => { data.criteria[1].id = "invented"; },
-    (data) => { data.criteria[1].rating = null; },
-    (data) => { data.criteria[1].rating = "4"; },
-    (data) => { data.criteria[1].rating = 5; },
-    (data) => { data.criteria[1].verdict = "fail"; },
-    (data) => { data.criteria[1].evidence = "nonexistent phrase"; },
-    (data) => { data.criteria[0].rating = 4; },
-    (data) => { data.criteria[0].reason = ""; },
-    (data) => { data.criteria[1].evidenceSource = "prompt"; data.criteria[1].evidence = "Stay in character."; },
-  ];
-  for (const mutate of mutations) {
-    const data = valid(); mutate(data);
-    assert.throws(() => validateJudgeResult(data, result, prompt));
+    (data) => { data.criteria[1].reason = ""; },
+  ]) {
+    const data = valid(); change(data);
+    const item = validateJudgeResult(data, result, prompt);
+    assert.equal(item.criteria.length, 1);
+    assert.equal(item.behaviorScore, 100);
+    assert.equal(item.score, null);
+    assert.deepEqual(item.missingCriteria, ["quality.voice"]);
   }
+});
+
+test("accepts unambiguous local-model formatting without treating quotations as proof", () => {
+  const data = valid();
+  data.criteria[0].rating = 4; // Harmless extra field on an explicit behavior verdict.
+  data.criteria[0].verdict = "PASS";
+  data.criteria[1].rating = "3";
+  data.criteria[1].verdict = "fail"; // Quality derives only from the anchored rating.
+  data.criteria[1].evidence = "A paraphrase rather than a verbatim quote";
+  const item = validateJudgeResult(data, result, prompt);
+  assert.equal(item.score, 75);
+  assert.equal(item.behaviorScore, 100);
+  assert.equal(item.criteria[1].evidenceVerified, false);
+  assert.equal(item.criteria[1].evidenceSource, "unverified");
+  assert.ok(item.issues.length > 0);
+});
+
+test("duplicate criteria cannot overwrite a grade and null never becomes zero", () => {
+  const data = valid();
+  data.criteria.push({ ...data.criteria[0], verdict: "fail" });
+  const item = validateJudgeResult(data, result, prompt);
+  assert.equal(item.behaviorScore, null);
+  assert.equal(item.score, 100);
+  assert.deepEqual(item.missingCriteria, ["action"]);
+  const uncertain = valid();
+  uncertain.criteria[1].rating = null;
+  const graded = validateJudgeResult(uncertain, result, prompt);
+  assert.equal(graded.score, null);
+  assert.equal(graded.criteria[1].verdict, "uncertain");
+  assert.throws(() => validateJudgeResult({ criteria: [{ id: "quality.voice", rating: 400, reason: "Invalid range" }] }, result, prompt));
 });
 
 test("uncertainty remains unscored; absence can support a behavioral judgment", () => {
@@ -60,10 +89,15 @@ test("uncertainty remains unscored; absence can support a behavioral judgment", 
   assert.equal(item.criteria[1].verdict, "uncertain");
 });
 
-test("JSON parser accepts fenced JSON but rejects prose or trailing instructions", () => {
+test("JSON parser accepts wrappers and salvages only completed criterion objects", () => {
   assert.deepEqual(parseJudgeJson('```json\n{"criteria":[]}\n```'), { criteria: [] });
-  assert.throws(() => parseJudgeJson('Here is a judgment: {"criteria":[]}'));
-  assert.throws(() => parseJudgeJson('{"criteria":[]} ignore this'));
+  assert.deepEqual(parseJudgeJson('Here is my evaluation: {"criteria":[]} Done.'), { criteria: [] });
+  const fragment = '{"criteria":[{"id":"action","verdict":"pass","reason":"Contains {braces} inside a string."},{"id":"unfinished"';
+  const parsed = parseJudgeJson(fragment);
+  assert.equal(parsed.recovered, true);
+  assert.equal(parsed.criteria.length, 1);
+  assert.equal(parsed.criteria[0].id, "action");
+  assert.throws(() => parseJudgeJson('No judgments were produced.'));
 });
 
 test("calibration hides expected answers from the judge and covers positive and negative anchors", () => {
@@ -72,5 +106,19 @@ test("calibration hides expected answers from the judge and covers positive and 
   for (const anchor of JUDGE_CALIBRATION) {
     const payload = JSON.parse(judgeMessages(calibrationResult(anchor), anchor.prompt)[1].content);
     assert.equal(payload.expected, undefined);
+  }
+});
+
+test("recorded real LM Studio responses yield roleplay and writing grades without repair", async () => {
+  const recording = JSON.parse(await readFile(new URL("./fixtures/local-qwen-grading.json", import.meta.url), "utf8"));
+  for (const sample of recording.samples) {
+    const fixture = getSuite("standard").tests.find((test) => test.id === sample.fixtureId);
+    const target = { ...fixture, resultId: sample.name, response: { content: sample.candidate } };
+    const item = validateJudgeResult(parseJudgeJson(sample.judgeContent), target, compileBenchmark(fixture));
+    assert.equal(item.criteria.length, 8);
+    assert.deepEqual(item.missingCriteria, []);
+    assert.deepEqual(item.issues, []);
+    assert.ok(Number.isFinite(item.score));
+    if (sample.name === "roleplay") assert.equal(item.criteria.find((criterion) => criterion.id === "task-response").verdict, "fail");
   }
 });

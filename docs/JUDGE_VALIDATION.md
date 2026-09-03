@@ -1,8 +1,8 @@
 # Validating a local or API judge
 
-The built-in six-example check is a sanity gate, not proof that a model can judge nuanced fiction. It tests paraphrased autonomy, an unrelated negation masking enacted actions, an empty acknowledgment, reversed object relationships, a synonymous scene event, and instructions embedded in candidate text. The synthetic anchors are in `src/calibration.js`; their expected labels are never sent to the judge.
+The built-in six-example check is a sanity check, not proof that a model can judge nuanced fiction. It tests paraphrased autonomy, an unrelated negation masking enacted actions, an empty acknowledgment, reversed object relationships, a synonymous scene event, and instructions embedded in candidate text. The synthetic anchors are in `src/calibration.js`; their expected labels are never sent to the judge.
 
-Run Quick with the intended judge settings. Inspect Environment → Judge calibration and errors if a sanity example fails. A truncated or malformed judge answer is a configuration failure rather than disagreement about the candidate. Increase output/context allowance or change supported reasoning settings as appropriate; do not treat rejected JSON as a low target score.
+Run Quick with the intended judge settings. Inspect Environment → Judge calibration and errors if a sanity example fails. The check is advisory and runs after target grading; failed examples make the scores provisional. A truncated or malformed judge answer is a configuration issue rather than disagreement about the candidate. Increase output/context allowance or change supported reasoning settings as appropriate; do not treat rejected JSON as a low target score.
 
 Before trusting model rankings, build a separate reviewed sample of real outputs from each evaluated model family. Include strong, weak and borderline responses, paraphrases, omissions, negation, long answers, adult/nonsexual-teen boundaries, ambiguous social cues, and incorrect state relationships. Keep a held-out set distinct from examples used to refine prompts.
 

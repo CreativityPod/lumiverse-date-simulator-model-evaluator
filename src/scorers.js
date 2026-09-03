@@ -270,6 +270,7 @@ export function aggregateRun(results, judge = null, coverage = null) {
   else if (critical.length) readiness = "not_ready_critical";
   else if (Object.values(gates).some((value) => value !== "pass")) readiness = "partially_compatible";
   if (readiness === "ready" && coverage?.targetCalls > results.filter((result) => result.runtime?.status === "success").length) readiness = "partially_compatible";
+  if (readiness === "ready" && judge?.calibration?.status === "failed") readiness = "partially_compatible";
   return {
     families, gates, readiness,
     plannedTests: coverage?.targetCalls ?? results.length,

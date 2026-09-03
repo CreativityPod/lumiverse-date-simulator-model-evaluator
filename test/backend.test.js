@@ -41,6 +41,12 @@ test("built backend boots and completes a headless queue without chat APIs", asy
     generate: {
       async raw(input) {
         rawCalls.push(input);
+        if (input.model === "judge-model") {
+          const candidate = JSON.parse(input.messages.at(-1).content);
+          return { content: JSON.stringify({ criteria: candidate.criteria.map((criterion) => criterion.kind === "quality"
+            ? { id: criterion.id, rating: 3, reason: "A mock quality grade." }
+            : { id: criterion.id, verdict: "pass", reason: "A mock behavior grade." }) }), finish_reason: "stop", usage: { total_tokens: 10 } };
+        }
         return { content: responseFor(input.messages), finish_reason: "stop", usage: { total_tokens: 10 } };
       },
     },
@@ -87,10 +93,23 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   assert.equal(messages.filter((payload) => payload.type === "evaluator_request_complete").length, 7);
 
   const completedRunId = completed.runs[0].id;
+  const originalReport = structuredClone(storage.get(`runs/${completedRunId}.json`));
+  const regradeComplete = new Promise((resolve) => { resolveQueue = resolve; });
+  await frontendHandler({ type: "evaluator_regrade_run", id: completedRunId, judge: { connectionId: "conn-1", model: "judge-model", calibrate: false } }, "user-1");
+  const regraded = await regradeComplete;
+  assert.equal(regraded.runs.length, 1);
+  assert.equal(regraded.runs[0].mode, "regrade");
+  assert.equal(regraded.runs[0].sourceRunId, completedRunId);
+  assert.equal(regraded.runs[0].aggregate.families.roleplay.subjectiveScore, 75);
+  assert.equal(regraded.runs[0].aggregate.families.writing.subjectiveScore, 75);
+  assert.equal(rawCalls.filter((call) => call.model === "override-model").length, 7);
+  assert.equal(rawCalls.filter((call) => call.model === "judge-model").length, 7);
+  assert.deepEqual(storage.get(`runs/${completedRunId}.json`), originalReport);
+  await frontendHandler({ type: "evaluator_delete_run", id: regraded.runs[0].id }, "user-1");
   await frontendHandler({ type: "evaluator_delete_run", id: completedRunId }, "user-1");
   assert.equal(storage.has(`runs/${completedRunId}.json`), false);
   assert.equal(storage.get("index.json").runs.length, 0);
-  const deleted = messages.find((payload) => payload.type === "evaluator_run_deleted");
+  const deleted = messages.find((payload) => payload.type === "evaluator_run_deleted" && payload.id === completedRunId);
   assert.equal(deleted.id, completedRunId);
   assert.equal(deleted.deleted, true);
 

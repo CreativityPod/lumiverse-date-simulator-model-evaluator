@@ -15,6 +15,7 @@ import {
   captureResponse,
   classifyCompletion,
   normalizeParameters,
+  regradeRun,
 } from "../src/runner.js";
 
 const validBody = CASE_FIELDS.map((field) => `${field}: ${field === "CASE" ? "DS-RUN; Date Simulator v1.5.5; Adult Mode" : "populated"}`).join("\n");
@@ -128,19 +129,26 @@ test("a failed multi-turn start skips dependent turns and keeps planned coverage
   assert.equal(run.aggregate.families.date_simulator.behaviorCoverage.total, run.suite.coverage.families.date_simulator.behavior);
 });
 
-test("judge calibration checks disagreement before accepting semantic scores", async () => {
+test("calibration disagreements warn without blocking Date, roleplay or writing grades", async () => {
   const run = createRun({ connectionId: "target", provider: "custom", model: "local" }, { enabled: true, connectionId: "judge", provider: "custom", model: "judge" });
   let judgeCalls = 0;
   await executeRun({ generate: { raw: async (input) => {
     if (input.connection_id !== "judge") return { content: responseFor(input.messages) };
     judgeCalls += 1;
-    return { content: JSON.stringify({ criteria: [{ id: "requirement", verdict: "pass", rating: null, evidenceSource: "absence", evidence: "", reason: "This mock judge always passes." }] }) };
+    const candidate = JSON.parse(input.messages.at(-1).content);
+    return { content: JSON.stringify({ criteria: candidate.criteria.map((criterion) => criterion.kind === "quality"
+      ? { id: criterion.id, rating: 3, reason: "A mock quality judgment." }
+      : { id: criterion.id, verdict: "pass", reason: "This mock always passes behavior." }) }) };
   } } }, run);
-  assert.equal(judgeCalls, 6);
-  assert.equal(run.judge.status, "calibration_failed");
+  assert.equal(judgeCalls, 13);
+  assert.equal(run.judge.status, "complete");
+  assert.equal(run.judge.calibration.status, "failed");
   assert.equal(run.judge.calibration.passed, 2);
-  assert.equal(run.judge.items.length, 0);
-  assert.equal(run.aggregate.families.roleplay.subjectiveScore, null);
+  assert.ok(run.judge.warnings.length);
+  assert.equal(run.judge.items.length, 7);
+  assert.equal(run.aggregate.families.roleplay.subjectiveScore, 75);
+  assert.equal(run.aggregate.families.writing.subjectiveScore, 75);
+  assert.equal(run.aggregate.families.date_simulator.behaviorScore, 100);
 });
 
 test("passing calibration permits grading and rejected judge output retains evidence and usage", async () => {
@@ -154,10 +162,10 @@ test("passing calibration permits grading and rejected judge output retains evid
   } } }, run);
   assert.equal(run.judge.calibration.status, "passed");
   assert.equal(run.judge.status, "failed");
-  assert.equal(run.judge.attempts.length, 7);
+  assert.equal(run.judge.attempts.length, 17);
   assert.equal(run.judge.attempts[0].response.reasoning, "budget used");
   assert.equal(run.judge.attempts[0].completion.status, "truncated");
-  assert.equal(run.usage.outputTokens, 21000);
+  assert.equal(run.usage.outputTokens, 51000);
   assert.equal(run.aggregate.families.writing.subjectiveScore, null);
 });
 
@@ -310,4 +318,44 @@ test("grades all fixtures with complete context, independent settings, and valid
   assert.equal(finished.aggregate.families.roleplay.subjectiveScore, 75);
   assert.equal(finished.aggregate.families.writing.subjectiveScore, 75);
   assert.equal(finished.aggregate.gates.private_profile, "pass");
+});
+
+test("saved target responses can be regraded, retaining partial grades and retrying only missing criteria", async () => {
+  let targetCalls = 0;
+  const source = createRun({ connectionId: "target", provider: "custom", model: "saved-local-target", suite: "quick" }, { enabled: false });
+  await executeRun({ generate: { raw: async (input) => {
+    targetCalls += 1;
+    return { content: responseFor(input.messages), usage: { total_tokens: 100 } };
+  } } }, source);
+  const before = structuredClone(source);
+  const seen = new Map();
+  const requested = [];
+  const graded = await regradeRun({ generate: { raw: async (input) => {
+    assert.equal(input.connection_id, "judge");
+    const candidate = JSON.parse(input.messages.at(-1).content);
+    requested.push(candidate.criteria.map((item) => item.id));
+    const first = !seen.has(candidate.id);
+    if (first) seen.set(candidate.id, candidate.criteria[0].id);
+    else assert.ok(!candidate.criteria.some((item) => item.id === seen.get(candidate.id)));
+    const judgments = candidate.criteria.map((criterion) => criterion.kind === "quality"
+      ? { id: criterion.id, rating: "3", reason: "Mock quality rating." }
+      : { id: criterion.id, verdict: "pass", reason: "Mock behavior rating." });
+    return {
+      content: first ? `{"criteria":[${JSON.stringify(judgments[0])},` : `Here are the remaining grades: ${JSON.stringify({ criteria: judgments })}`,
+      finish_reason: first ? "length" : "stop", usage: { total_tokens: 10 },
+    };
+  } } }, source, { connectionId: "judge", provider: "custom", model: "local-judge", calibrate: false });
+  assert.equal(targetCalls, 7);
+  assert.notEqual(graded.id, source.id);
+  assert.equal(graded.sourceRunId, source.id);
+  assert.equal(graded.mode, "regrade");
+  assert.equal(graded.judge.status, "complete");
+  assert.equal(graded.aggregate.families.roleplay.subjectiveScore, 75);
+  assert.equal(graded.aggregate.families.writing.subjectiveScore, 75);
+  assert.equal(graded.aggregate.families.date_simulator.behaviorScore, 100);
+  assert.equal(graded.usage.totalTokens, requested.length * 10);
+  assert.ok(graded.judge.attempts.some((attempt) => attempt.retry));
+  assert.ok(graded.judge.attempts.filter((attempt) => attempt.retry).every((attempt) => attempt.criterionIds.length <= 4));
+  assert.deepEqual(source, before);
+  assert.deepEqual(graded.results, source.results);
 });

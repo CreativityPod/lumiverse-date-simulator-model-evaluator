@@ -76,11 +76,25 @@ test("new reports show absent quality as unassessed and expose response/judge di
     results: [{ resultId: "r", testId: "RP", title: "Roleplay", family: "roleplay", runtime: { status: "incomplete" }, completion: { status: "truncated", detail: "Output budget exhausted" }, response: { content: "partial", reasoning: "analysis", finishReason: "length" }, criteria: [{ id: "role", label: "Role", instruction: "Perform the requested scene" }] }],
   };
   const overview = flatten(overviewReport(run));
-  assert.ok(overview.filter((node) => node.className === "dme-score-number").every((node) => node.textContent === "—"));
+  assert.ok(overview.filter((node) => node.className === "dme-score-number").every((node) => node.textContent === "Not graded"));
   const evidence = flatten(evidenceReport(run, "roleplay"));
   assert.ok(evidence.some((node) => node.textContent === "Output budget exhausted"));
   assert.ok(evidence.some((node) => node.textContent?.includes('"reasoning": "analysis"')));
   assert.ok(evidence.some((node) => node.textContent?.includes("Not assessed")));
+});
+
+test("Date Simulator headline keeps its protocol score when semantic grading is unavailable", (context) => {
+  fakeDocument(context);
+  const run = {
+    schemaVersion: 2, suite: { targetCalls: 7 },
+    aggregate: { families: { date_simulator: { objectiveScore: 88, behaviorScore: null }, roleplay: { subjectiveScore: null }, writing: { subjectiveScore: null } } },
+    judge: { enabled: true, status: "calibration_failed", errors: ["Old calibration gate stopped grading"] },
+    results: [],
+  };
+  const nodes = flatten(overviewReport(run));
+  assert.deepEqual(nodes.filter((node) => node.className === "dme-score-number").map((node) => node.textContent), ["88", "Not graded", "Not graded"]);
+  assert.ok(nodes.some((node) => node.textContent?.includes("previous evaluator stopped all grading")));
+  assert.ok(nodes.some((node) => node.textContent === "Protocol checks"));
 });
 
 test("run countdown follows request deadlines and cleans up across completion, Stop, errors and teardown", (context) => {

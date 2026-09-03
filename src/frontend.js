@@ -89,6 +89,20 @@ function scoreValue(family, run) {
   return family?.subjectiveScore ?? family?.objectiveScore ?? null;
 }
 
+export function missingScoreReason(run, family) {
+  const results = (run.results ?? []).filter((result) => result.family === family);
+  const complete = results.filter((result) => result.runtime?.status === "success");
+  if (!complete.length && results.length) return `No completed response to score. ${results[0].completion?.detail || results[0].runtime?.error || "Review the target response diagnostics."}`;
+  if (family === "date_simulator") return "No completed protocol checks are available for this report.";
+  if (!run.judge?.enabled) return "Enable a semantic judge, then grade these saved responses to get a quality score.";
+  if (run.judge.status === "calibration_failed") return "The previous evaluator stopped all grading after a judge sanity-check failure. Grade these saved responses with the updated evaluator.";
+  if (["pending", "running"].includes(run.judge.status)) return "Semantic grading is still in progress.";
+  const truncated = run.judge.attempts?.some((attempt) => complete.some((result) => result.resultId === attempt.resultId) && attempt.completion?.status === "truncated");
+  if (truncated) return `Judge output reached its ${run.judge.maxTokens ?? "configured"}-token limit before this score was complete. Increase the judge output allowance (for example, 8,192 tokens for a reasoning model), then grade saved responses.`;
+  const error = run.judge.errors?.find((message) => complete.some((result) => message.startsWith(result.resultId))) ?? run.judge.errors?.[0];
+  return error ? `Judge could not complete this score: ${error}` : "The judge returned no usable quality ratings. Grade saved responses to retry without rerunning the target model.";
+}
+
 export function comparisonKey(run) {
   const canonical = (value) => {
     if (Array.isArray(value)) return value.map(canonical);
@@ -275,6 +289,7 @@ function reportEnvironment(run) {
     ["Judge settings", run.judge?.enabled ? JSON.stringify({ temperature: run.judge.temperature ?? "provider default", maxTokens: run.judge.maxTokens, timeoutMs: run.judge.timeoutMs, reasoning: run.judge.reasoning, parameters: run.judge.parameters }) : "Not assessed"],
     ["Judge sanity check", run.judge?.calibration ? `${run.judge.calibration.status} · ${run.judge.calibration.passed}/${run.judge.calibration.total}` : "Not run"],
     ["Judge independence", run.judge?.enabled ? run.judge.official ? "Different model ID enforced; aliases and shared model families require review" : "Exploratory; self-judging allowed" : "No semantic grading"],
+    ["Evidence source", run.sourceRunId ? `Regraded saved run ${run.sourceRunId}; token usage below is for new judge calls only` : "Fresh target generation"],
     ["Duration", formatDuration(run.durationMs)],
     ["Tokens", `${run.usage?.inputTokens ?? 0} in · ${run.usage?.outputTokens ?? 0} out`],
   ];
@@ -302,19 +317,22 @@ export function overviewReport(run) {
   const scoreGrid = element("section", "dme-score-grid");
   for (const [family, label] of [["date_simulator", "Date Simulator"], ["roleplay", "Roleplay"], ["writing", "Creative writing"]]) {
     const data = aggregate.families?.[family] ?? {};
-    const value = run.schemaVersion >= 2 && family === "date_simulator" ? data.behaviorScore : scoreValue(data, run);
+    const value = run.schemaVersion >= 2 && family === "date_simulator" ? data.objectiveScore : scoreValue(data, run);
     const band = scoreBand(value);
     const card = element("article", "dme-score-card");
     card.append(
       element("span", "dme-score-label", label),
-      element("strong", "dme-score-number", value == null ? "—" : `${value}`),
-      element("span", `dme-score-band dme-${band.state}`, band.label),
+      element("strong", "dme-score-number", value == null ? "Not graded" : `${value}`),
+      element("span", `dme-score-band dme-${band.state}`, family === "date_simulator" && run.schemaVersion >= 2 ? "Protocol checks" : band.label),
       element("span", "dme-hint", run.schemaVersion >= 2
-        ? family === "date_simulator" ? "Semantic requirements met (assessed criteria only)" : "Contextual quality rating (assessed criteria only)"
+        ? family === "date_simulator" ? "Mechanical compliance; semantic behavior is shown separately below" : "Contextual quality rating (assessed criteria only)"
         : "Legacy score; includes keyword-based checks"),
       element("span", "dme-hint", run.schemaVersion >= 2
         ? `Behavior ${data.behaviorCoverage?.assessed ?? 0}/${data.behaviorCoverage?.total ?? 0} · Quality ${data.qualityCoverage?.assessed ?? 0}/${data.qualityCoverage?.total ?? 0} assessed` : "Not comparable to version 2 scoring"),
     );
+    if (value == null) card.appendChild(element("p", "dme-hint", missingScoreReason(run, family)));
+    if (family === "date_simulator" && run.schemaVersion >= 2) card.appendChild(element("span", "dme-hint", `Semantic behavior: ${data.behaviorScore == null ? "Not graded" : `${data.behaviorScore}/100`}`));
+    if (run.judge?.calibration?.status === "failed") card.appendChild(element("span", "dme-hint", "Semantic grades are provisional: judge sanity check had disagreements/errors."));
     scoreGrid.appendChild(card);
   }
 
@@ -351,6 +369,7 @@ export function overviewReport(run) {
   root.append(hero, scoreGrid, gates, profiles, distribution);
   if (run.schemaVersion >= 2) {
     root.appendChild(element("p", "dme-hint", "LLM judgments are estimates, not human validation. Inspect evidence, compare paraphrases and failures, and calibrate your chosen judge on the supplied review corpus before relying on rankings. Inherited connection settings and server defaults can affect comparability."));
+    for (const warning of run.judge?.warnings ?? []) root.appendChild(element("p", "dme-comparison-warning", warning));
     if (!run.judge?.enabled || run.judge.status !== "complete") root.appendChild(element("p", "dme-comparison-warning", `Semantic grading: ${run.judge?.status ?? "disabled"}. Unassessed criteria are excluded from percentages and remain visible in coverage.`));
   }
   return root;
@@ -394,7 +413,7 @@ export function evidenceReport(run, family) {
         finding.append(heading, element("p", "dme-hint", criterion.instruction));
         if (item) {
           finding.appendChild(element("p", "", `${item.rating == null ? "" : `${item.rating}/4 · `}${item.reason}`));
-          finding.appendChild(element("pre", "dme-evidence", `${item.evidenceSource}: ${item.evidence || "Absence assessed across response"}`));
+          finding.appendChild(element("pre", "dme-evidence", item.evidence ? `${item.evidenceSource === "unverified" ? "Unverified quote" : item.evidenceSource}: ${item.evidence}` : item.evidenceSource === "absence" ? "Absence assessed across response" : "Rationale-based judgment; no quote supplied"));
         }
         body.appendChild(finding);
       }
@@ -440,6 +459,10 @@ function openRunReport(ctx, run, callbacks = {}) {
   deleteReport.addEventListener("click", () => {
     callbacks.requestDelete?.(run, () => modal.dismiss());
   });
+  const gradeSaved = button(run.judge?.items?.length ? "Regrade saved responses" : "Grade saved responses", "dme-primary");
+  gradeSaved.disabled = !(run.schemaVersion >= 2) || !(run.results ?? []).some((result) => result.runtime?.status === "success");
+  gradeSaved.title = "Use the judge selected in Evaluator settings. Makes judge calls only; preserves the original report and target responses.";
+  gradeSaved.addEventListener("click", () => callbacks.requestGrade?.(run, () => modal.dismiss()));
   const exportSummary = button("Export summary JSON");
   exportSummary.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-summary.json`, {
     id: run.id,
@@ -455,7 +478,7 @@ function openRunReport(ctx, run, callbacks = {}) {
   }));
   const exportFull = button("Export full evidence");
   exportFull.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-full.json`, run));
-  reportActions.append(deleteReport, exportSummary, exportFull);
+  reportActions.append(gradeSaved, deleteReport, exportSummary, exportFull);
   context.appendChild(reportActions);
 
   const tabs = element("div", "dme-report-tabs");
@@ -502,7 +525,7 @@ function openComparisonReport(ctx, runs) {
   ));
   const table = element("div", "dme-compare-table");
   const header = element("div", "dme-compare-row dme-compare-head");
-  for (const label of ["Model", "Readiness", "Date behavior", "RP quality", "Writing quality", "Complete", "Time"]) header.appendChild(element("span", "", label));
+  for (const label of ["Model", "Readiness", "Date protocol", "RP quality", "Writing quality", "Complete", "Time"]) header.appendChild(element("span", "", label));
   table.appendChild(header);
   for (const run of runs) {
     const row = element("div", "dme-compare-row");
@@ -510,7 +533,7 @@ function openComparisonReport(ctx, runs) {
     row.append(
       element("strong", "", run.target.model),
       verdictBadge(readiness.state, readiness.label),
-      element("span", "", (run.schemaVersion >= 2 ? run.aggregate?.families?.date_simulator?.behaviorScore : null) ?? "—"),
+      element("span", "", (run.schemaVersion >= 2 ? run.aggregate?.families?.date_simulator?.objectiveScore : null) ?? "—"),
       element("span", "", (run.schemaVersion >= 2 ? scoreValue(run.aggregate?.families?.roleplay, run) : null) ?? "—"),
       element("span", "", (run.schemaVersion >= 2 ? scoreValue(run.aggregate?.families?.writing, run) : null) ?? "—"),
       element("span", "", `${run.aggregate?.completedTests ?? 0}/${run.suite?.targetCalls ?? "?"}`),
@@ -725,11 +748,11 @@ export function setup(ctx) {
   const judgeEnabledLabel = element("label", "dme-inline-check");
   const judgeEnabled = input("checkbox", "");
   judgeEnabled.checked = false;
-  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Grade contextual requirements for every test, plus roleplay and writing quality. Without a judge, semantic capability is not assessed. Adds one judge call per completed target response."));
+  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Grade contextual requirements for every test, plus roleplay and writing quality. Without a judge, semantic capability is not assessed. Grades each completed target response; missing or malformed grades get one retry in smaller batches."));
   const calibrationLabel = element("label", "dme-inline-check");
   const calibrationEnabled = input("checkbox", "");
   calibrationEnabled.checked = true;
-  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with six synthetic examples first. Adds six judge calls per run; grading is skipped if any check fails. This checks basic reliability, not human-level calibration."));
+  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with six synthetic examples after grading. Adds six diagnostic calls after grading. Disagreements mark scores provisional; they never block grading."));
   const judgeGrid = element("div", "dme-grid");
   const judgeConnectionField = field("Judge connection");
   const judgeModelField = field("Judge model");
@@ -743,7 +766,7 @@ export function setup(ctx) {
   const judgeTemperatureField = field("Judge temperature", "Blank uses the provider default. Choose sampling settings appropriate for this model.");
   const judgeTemperature = input("number", "", { min: 0, max: 2, step: 0.1 });
   judgeTemperatureField.slot.appendChild(judgeTemperature);
-  const judgeTokensField = field("Judge maximum output tokens", "Includes reasoning on providers that share the output budget.");
+  const judgeTokensField = field("Judge maximum output tokens", "Includes reasoning. Older saved limits such as 2,400 can run out before grades are returned; 8,192 is the current default.");
   const judgeTokens = input("number", 8192, { min: 400, max: 262144, step: 1 });
   judgeTokensField.slot.appendChild(judgeTokens);
   const judgeReasoningField = field("Judge reasoning");
@@ -1041,6 +1064,20 @@ export function setup(ctx) {
     ctx.sendToBackend({ type: "evaluator_run_queue", queue: valid, judge: currentJudge() });
   }
 
+  function requestGrade(run, afterStart = () => {}) {
+    if (running) return;
+    const judge = { ...currentJudge(), enabled: true };
+    if (!judge.connectionId || !judge.model) {
+      setStatus("Select a judge connection and model in Evaluator settings, then grade the saved responses.", 0, true);
+      return;
+    }
+    latestBatch = [];
+    setRunning(true);
+    setStatus("Grading saved responses with the selected judge. No target calls will be made.", 0);
+    ctx.sendToBackend({ type: "evaluator_regrade_run", id: run.id, judge });
+    afterStart();
+  }
+
   function requestDelete(run, afterConfirm = () => {}) {
     if (running || !run?.id) return;
     const model = run.target?.model || "this model";
@@ -1160,13 +1197,13 @@ export function setup(ctx) {
     if (payload?.type === "evaluator_model_rejected") { stopCountdown(); setStatus(payload.message, 0, true); }
     if (payload?.type === "evaluator_queue_complete") {
       setRunning(false);
-      setStatus(payload.stopped ? `Stopped. ${latestBatch.length} completed report${latestBatch.length === 1 ? "" : "s"} saved.` : `Complete. ${latestBatch.length} report${latestBatch.length === 1 ? "" : "s"} saved.`, 100);
-      if (latestBatch.length === 1) openRunReport(ctx, latestBatch[0], { requestDelete });
+      setStatus(payload.error || (payload.stopped ? `Stopped. ${latestBatch.length} completed report${latestBatch.length === 1 ? "" : "s"} saved.` : `Complete. ${latestBatch.length} report${latestBatch.length === 1 ? "" : "s"} saved.`), payload.error ? 0 : 100, Boolean(payload.error));
+      if (latestBatch.length === 1) openRunReport(ctx, latestBatch[0], { requestDelete, requestGrade });
       else if (latestBatch.length > 1) openComparisonReport(ctx, latestBatch);
     }
     if (payload?.type === "evaluator_run_detail" && payload.run) {
       pendingReportId = "";
-      openRunReport(ctx, payload.run, { requestDelete });
+      openRunReport(ctx, payload.run, { requestDelete, requestGrade });
       renderHistory();
     }
     if (payload?.type === "evaluator_run_deleted") {

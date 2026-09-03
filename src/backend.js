@@ -5,6 +5,7 @@ import {
   executeRun,
   normalizeJudge,
   normalizeModelTarget,
+  regradeRun,
   summarizeRun,
   validateRunRequest,
 } from "./runner.js";
@@ -250,6 +251,54 @@ async function startQueue(payload, userId) {
   }
 }
 
+async function gradeStoredRun(payload, userId) {
+  const key = userKey(userId);
+  if (activeQueues.has(key)) {
+    send({ type: "evaluator_error", message: "An evaluation is already running. Finish or stop it before regrading." }, userId);
+    return;
+  }
+  if (!spindle.permissions.has("generation")) {
+    send({ type: "evaluator_error", message: "Grant generation permission before grading." }, userId);
+    return;
+  }
+  const controller = new AbortController();
+  activeQueues.set(key, { controller, currentRunId: "" });
+  let finished = null;
+  let failure = "";
+  try {
+    const source = await loadRun(payload.id);
+    if (!source) throw new Error("That saved report could not be found.");
+    const judge = await resolveJudge({ ...payload.judge, enabled: true }, userId);
+    send({ type: "evaluator_queue_started", totalModels: 1 }, userId);
+    finished = await regradeRun(spindle, source, judge, {
+      userId, signal: controller.signal,
+      hooks: {
+        persist: persistRun,
+        started(run) {
+          activeQueues.get(key).currentRunId = run.id;
+          send({ type: "evaluator_run_started", queueIndex: 0, totalModels: 1, run: summarizeRun(run) }, userId);
+        },
+        progress(progress) {
+          const update = { type: "evaluator_progress", runId: activeQueues.get(key).currentRunId, queueIndex: 0, totalModels: 1, model: source.target.model, ...progress, serverNow: Date.now() };
+          activeQueues.get(key).progress = update;
+          send(update, userId);
+        },
+        requestComplete() {
+          delete activeQueues.get(key).progress;
+          send({ type: "evaluator_request_complete", runId: activeQueues.get(key).currentRunId }, userId);
+        },
+      },
+    });
+    send({ type: "evaluator_run_complete", run: finished }, userId);
+  } catch (error) {
+    failure = String(error?.message ?? error);
+    send({ type: "evaluator_error", message: failure }, userId);
+  } finally {
+    activeQueues.delete(key);
+    send({ type: "evaluator_queue_complete", stopped: controller.signal.aborted, error: failure, runs: finished ? [summarizeRun(finished)] : [] }, userId);
+  }
+}
+
 spindle.onFrontendMessage(async (payload, userId) => {
   frontendUsers.add(userKey(userId));
   const type = payload?.type;
@@ -260,6 +309,8 @@ spindle.onFrontendMessage(async (payload, userId) => {
     send({ type: "evaluator_config_saved" }, userId);
   } else if (type === "evaluator_run_queue") {
     void startQueue(payload, userId);
+  } else if (type === "evaluator_regrade_run") {
+    void gradeStoredRun(payload, userId);
   } else if (type === "evaluator_stop") {
     const active = activeQueues.get(userKey(userId));
     if (active) active.controller.abort();

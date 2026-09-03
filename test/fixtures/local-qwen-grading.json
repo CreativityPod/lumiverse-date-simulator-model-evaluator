@@ -1,0 +1,39 @@
+{
+  "date": "2026-09-03",
+  "rubric": "contextual-rubric.3",
+  "source": "Live LM Studio synthetic smoke checks; excludes private reasoning.",
+  "samples": [
+    {
+      "name": "roleplay",
+      "model": "qwen3.6-35b-a3b",
+      "fixtureId": "RP-AGY-001",
+      "candidate": "Okay.",
+      "judgeContent": "\n\n{\n  \"criteria\": [\n    {\n      \"id\": \"rp-agency\",\n      \"verdict\": \"pass\",\n      \"reason\": \"The response avoids inventing any user actions, decisions, or dialogue.\"\n    },\n    {\n      \"id\": \"rp-development\",\n      \"verdict\": \"fail\",\n      \"reason\": \"It is an empty acknowledgment that fails to contribute a motivated development by Rowan.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"task-response\",\n      \"verdict\": \"fail\",\n      \"reason\": \"The output is a generic acknowledgment rather than performing the requested roleplay scene.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"quality.character_adherence\",\n      \"rating\": 1,\n      \"reason\": \"Major deficiencies; no character actions or reactions are present to evaluate adherence.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"quality.user_agency\",\n      \"rating\": 1,\n      \"reason\": \"It leaves room for the user but contributes nothing meaningful to sustain the interaction.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"quality.responsiveness\",\n      \"rating\": 1,\n      \"reason\": \"Fails to respond specifically to the prompt due to a complete lack of relevant content.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"quality.voice\",\n      \"rating\": 1,\n      \"reason\": \"No distinct voice is demonstrated as the response lacks character dialogue or narration.\",\n      \"evidence\": \"Okay.\"\n    },\n    {\n      \"id\": \"quality.initiative_balance\",\n      \"rating\": 1,\n      \"reason\": \"Contributes insufficient material to sustain the scene, failing to balance initiative.\",\n      \"evidence\": \"Okay.\"\n    }\n  ]\n}",
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 899,
+        "completion_tokens": 2734,
+        "total_tokens": 3633,
+        "completion_tokens_details": {
+          "reasoning_tokens": 2293
+        }
+      }
+    },
+    {
+      "name": "writing",
+      "model": "qwen3.6-35b-a3b",
+      "fixtureId": "CW-REV-001",
+      "candidate": "Nia lifted the cracked mug with her left hand and watched a bead of tea gather along the fracture. The train left at 6:12. She checked the clock again, as though its hands might accept an argument. Outside, snow blocked the east road; the tire tracks from yesterday had vanished beneath a smooth white ridge. Omar’s number waited on her phone, still uncalled. She set the mug down carefully and reached for her coat. Each small task seemed to take longer than it should. If she called now, she would have to explain why she had waited. If she kept watching the clock, the explanation would only grow worse.",
+      "judgeContent": "\n\n{\n  \"criteria\": [\n    {\n      \"id\": \"revision-facts\",\n      \"verdict\": \"pass\",\n      \"reason\": \"All five required facts are accurately woven into the narrative without omission or contradiction.\"\n    },\n    {\n      \"id\": \"revision-pov\",\n      \"verdict\": \"pass\",\n      \"reason\": \"The narration remains tightly anchored to Nia’s immediate sensory experience and internal thoughts.\"\n    },\n    {\n      \"id\": \"task-response\",\n      \"verdict\": \"pass\",\n      \"reason\": \"The output is a single paragraph of creative prose that fulfills the rewriting prompt within the specified word limit.\"\n    },\n    {\n      \"id\": \"quality.fact_preservation\",\n      \"rating\": 4,\n      \"reason\": \"Every proposition, including negations and specific details like times and locations, is faithfully retained.\",\n      \"evidence\": \"Omar’s number waited on her phone, still uncalled.\"\n    },\n    {\n      \"id\": \"quality.prose_clarity\",\n      \"rating\": 4,\n      \"reason\": \"The language is vivid and precise, creating a clear atmospheric scene without confusing phrasing.\",\n      \"evidence\": \"watched a bead of tea gather along the fracture\"\n    },\n    {\n      \"id\": \"quality.characterization\",\n      \"rating\": 4,\n      \"reason\": \"Generic nervousness is effectively replaced by specific physical actions and hesitant internal reasoning.\",\n      \"evidence\": \"She set the mug down carefully and reached for her coat.\"\n    },\n    {\n      \"id\": \"quality.sentence_control\",\n      \"rating\": 4,\n      \"reason\": \"Varied sentence structures and pacing successfully build tension while maintaining the close-third focus.\",\n      \"evidence\": \"If she called now, she would have to explain why she had waited.\"\n    },\n    {\n      \"id\": \"quality.revision_quality\",\n      \"rating\": 4,\n      \"reason\": \"The rewrite transforms a choppy list of facts into a cohesive, engaging narrative paragraph that meets all constraints.\",\n      \"evidence\": \"Each small task seemed to take longer than it should.\"\n    }\n  ]\n}",
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 1060,
+        "completion_tokens": 3944,
+        "total_tokens": 5004,
+        "completion_tokens_details": {
+          "reasoning_tokens": 3446
+        }
+      }
+    }
+  ]
+}

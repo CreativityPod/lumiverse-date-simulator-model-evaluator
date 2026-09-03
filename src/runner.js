@@ -191,6 +191,9 @@ function runSummary(run) {
   return {
     id: run.id,
     schemaVersion: run.schemaVersion,
+    mode: run.mode,
+    sourceRunId: run.sourceRunId,
+    reusedTargetCalls: run.reusedTargetCalls,
     status: run.status,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
@@ -232,7 +235,7 @@ export function createRun(targetValue, judgeValue) {
       },
     },
     snapshot: snapshotMetadata(),
-    judge: judge.enabled ? { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, items: [], attempts: [], errors: [] } : null,
+    judge: judge.enabled ? { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, items: [], attempts: [], errors: [], warnings: [] } : null,
     prompts: {},
     results: [],
     aggregate: null,
@@ -322,48 +325,101 @@ async function checkJudgeCalibration(spindleApi, run, userId, signal, hooks) {
   return calibration.status === "passed";
 }
 
+async function gradeResult(spindleApi, run, result, userId, signal, hooks, index, total) {
+  const collected = new Map();
+  const batches = [result.criteria];
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    if (signal?.aborted) throw abortError(signal.reason);
+    const requested = { ...result, criteria: batches[batchIndex] };
+    const messages = judgeMessages(requested, run.prompts[result.promptRef]);
+    const input = requestInput(run.judge, messages, undefined, userId);
+    const attempt = { resultId: result.resultId, retry: batchIndex > 0, criterionIds: requested.criteria.map((item) => item.id), messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit", status: "pending" };
+    const started = Date.now();
+    hooks.progress?.({ phase: "judge", current: index + 1, total, label: `${batchIndex ? "Retry missing grades" : "Contextual grading"}: ${result.title}`, timeoutMs: run.judge.timeoutMs, requestStartedAt: started });
+    run.judge.attempts.push(attempt);
+    try {
+      const raw = await generateRawWithTimeout(spindleApi, input, { signal, timeoutMs: run.judge.timeoutMs });
+      addUsage(run.usage, raw?.usage);
+      attempt.response = captureResponse(raw);
+      attempt.completion = classifyCompletion(attempt.response);
+      // A token limit may leave several complete JSON criterion objects. Retain
+      // those judgments and request only the missing ones with a smaller output.
+      if (!["complete", "truncated"].includes(attempt.completion.status)) throw new Error(attempt.completion.detail);
+      const item = validateJudgeResult(parseJudgeJson(attempt.response.content), requested, run.prompts[result.promptRef]);
+      for (const criterion of item.criteria) collected.set(criterion.id, criterion);
+      attempt.issues = item.issues;
+      attempt.missingCriteria = item.missingCriteria;
+      attempt.status = item.missingCriteria.length ? "partial" : "accepted";
+    } catch (error) {
+      attempt.status = signal?.aborted ? "interrupted" : "rejected";
+      attempt.error = String(error?.message ?? error);
+      if (signal?.aborted) { run.judge.status = "interrupted"; throw error; }
+    } finally {
+      hooks.requestComplete?.();
+      attempt.latencyMs = Date.now() - started;
+      if (collected.size) {
+        const item = validateJudgeResult({ criteria: [...collected.values()] }, result, run.prompts[result.promptRef]);
+        run.judge.items = [...run.judge.items.filter((entry) => entry.id !== result.resultId), item];
+      }
+      run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);
+      await hooks.persist?.(run);
+    }
+    if (batchIndex === 0 && attempt.response && ["complete", "truncated"].includes(attempt.completion?.status)) {
+      const missing = result.criteria.filter((criterion) => !collected.has(criterion.id));
+      // At most one retry per missing criterion; do not discard successful grades.
+      for (let offset = 0; offset < missing.length; offset += 4) batches.push(missing.slice(offset, offset + 4));
+    }
+  }
+  const missing = result.criteria.filter((criterion) => !collected.has(criterion.id));
+  if (missing.length) {
+    const lastError = run.judge.attempts.filter((attempt) => attempt.resultId === result.resultId).findLast((attempt) => attempt.error)?.error;
+    run.judge.errors.push(`${result.resultId}: ${collected.size}/${result.criteria.length} criteria graded.${lastError ? ` ${lastError}` : ""}`);
+  }
+}
+
 async function runJudge(spindleApi, run, userId, parentSignal, hooks) {
   if (!run.judge?.enabled) return;
   run.judge.status = "running";
   const eligible = run.results.filter((result) => result.runtime.status === "success" && result.criteria?.length);
+  for (const [index, result] of eligible.entries()) await gradeResult(spindleApi, run, result, userId, parentSignal, hooks, index, eligible.length);
+  // Calibration is diagnostic. A disagreement must not erase or prevent grading.
   if (eligible.length && !await checkJudgeCalibration(spindleApi, run, userId, parentSignal, hooks)) {
-    run.judge.status = "calibration_failed";
-    run.judge.errors.push("Judge failed the synthetic sanity check. Semantic results were not graded. Review calibration evidence and judge settings.");
-    return;
-  }
-  for (const [index, result] of eligible.entries()) {
-    if (parentSignal?.aborted) throw abortError(parentSignal.reason);
-    const timeoutMs = run.judge.timeoutMs;
-    const messages = judgeMessages(result, run.prompts[result.promptRef]);
-    const input = requestInput(run.judge, messages, undefined, userId);
-    const attempt = { resultId: result.resultId, messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit", status: "pending" };
-    const started = Date.now();
-    hooks.progress?.({ phase: "judge", current: index + 1, total: eligible.length, label: `Contextual grading: ${result.title}`, timeoutMs, requestStartedAt: started });
-    run.judge.attempts.push(attempt);
-    try {
-      const raw = await generateRawWithTimeout(spindleApi, input, { signal: parentSignal, timeoutMs });
-      attempt.response = captureResponse(raw);
-      addUsage(run.usage, raw?.usage);
-      attempt.completion = classifyCompletion(attempt.response);
-      if (attempt.completion.status !== "complete") throw new Error(attempt.completion.detail);
-      const item = validateJudgeResult(parseJudgeJson(attempt.response.content), result, run.prompts[result.promptRef]);
-      run.judge.items.push(item);
-      attempt.status = "accepted";
-    } catch (error) {
-      attempt.status = parentSignal?.aborted ? "interrupted" : "rejected";
-      attempt.error = String(error?.message ?? error);
-      run.judge.errors.push(`${result.resultId}: ${attempt.error}`);
-      if (parentSignal?.aborted) { run.judge.status = "interrupted"; throw error; }
-    } finally {
-      hooks.requestComplete?.();
-      attempt.latencyMs = Date.now() - started;
-      run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);
-      await hooks.persist?.(run);
-    }
+    run.judge.warnings.push("Judge sanity check had disagreements or errors. Scores are provisional; inspect its examples and target evidence.");
   }
   const uncertain = run.judge.items.some((item) => item.criteria.some((criterion) => criterion.verdict === "uncertain"));
   run.judge.status = !eligible.length ? "not_applicable" : !run.judge.items.length ? "failed"
     : run.judge.errors.length || uncertain || eligible.length < run.suite.targetCalls ? "partial" : "complete";
+}
+
+export async function regradeRun(spindleApi, source, judgeValue, options = {}) {
+  if (!(source?.schemaVersion >= 2) || !source.results?.length || !source.prompts) throw new Error("This report does not contain reusable version 2 target evidence.");
+  const judge = normalizeJudge({ ...judgeValue, enabled: true });
+  const errors = validateRunRequest(source.target, judge);
+  if (errors.length) throw new Error(errors.join(" "));
+  if (!source.results.some((result) => result.runtime?.status === "success" && source.prompts[result.promptRef] && result.criteria?.length)) {
+    throw new Error("No completed target responses are available to grade. Incomplete target output requires a new target run.");
+  }
+  const run = {
+    ...JSON.parse(JSON.stringify(source)), id: runId(), sourceRunId: source.id, mode: "regrade",
+    reusedTargetCalls: source.results.length, status: "running", startedAt: new Date().toISOString(), completedAt: "", durationMs: 0,
+    judge: { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, items: [], attempts: [], errors: [], warnings: [] },
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, errors: [],
+  };
+  const started = Date.now();
+  await options.hooks?.persist?.(run);
+  options.hooks?.started?.(run);
+  try {
+    await runJudge(spindleApi, run, options.userId, options.signal, options.hooks ?? {});
+    run.status = "complete";
+  } catch (error) {
+    run.status = options.signal?.aborted ? "interrupted" : "failed";
+    run.errors.push(String(error?.message ?? error));
+  }
+  run.durationMs = Date.now() - started;
+  run.completedAt = new Date().toISOString();
+  run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);
+  await options.hooks?.persist?.(run);
+  return run;
 }
 
 export async function executeRun(spindleApi, run, options = {}) {

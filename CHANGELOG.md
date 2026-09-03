@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2
+
+- Restore the Date Simulator protocol score on the main report and comparison cards; keep semantic behavior separate.
+- Make judge sanity checks advisory and run them after grading. A disagreement no longer blocks all semantic scores.
+- Simplify the judge format, retain valid partial grades, recover complete judgments from truncated JSON, and retry only missing criteria in bounded groups. Label unverified quotations instead of discarding otherwise usable ratings.
+- Add **Grade saved responses** / **Regrade saved responses**, using the currently selected judge and creating a separate report without target calls.
+- Show actionable reasons for missing quality scores. Bump the judge rubric to contextual-rubric.3.
+
 ## 0.2.1
 
 - Add a run-status spinner and live per-request timeout countdown for target, judge and calibration calls.
