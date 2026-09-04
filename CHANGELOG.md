@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Place **Add model** and **Refresh** in a vertical action area beside the target output-limit guidance. Both stay close to the model selector inside the collapsible Target model section, with **Refresh** below **Add model**; **Run now** remains visible while the section is collapsed.
+
 ## 0.3.1
 
 - Make Target model settings collapsed by default, matching the Semantic judge section, while keeping **Run now** and **Add model** visible.

@@ -1,6 +1,6 @@
 # Date Simulator Model Evaluator
 
-Version **0.3.1** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
+Version **0.3.2** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
 
 ## Scoring
 

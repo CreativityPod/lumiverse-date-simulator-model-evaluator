@@ -50,9 +50,13 @@ test("settings UI restores and launches local/API targets with independently con
   const inside = (node, ancestor) => { for (let current = node.parent; current; current = current.parent) if (current === ancestor) return true; return false; };
   assert.equal(targetDetails.tag, "details");
   assert.notEqual(targetDetails.open, true);
-  assert.equal(inside(nodes.find((node) => node.textContent === "Refresh"), targetDetails), true);
+  const refresh = nodes.find((node) => node.textContent === "Refresh");
+  const addModel = nodes.find((node) => node.textContent === "Add model");
+  assert.equal(inside(refresh, targetDetails), true);
+  assert.equal(inside(addModel, targetDetails), true);
+  assert.equal(refresh.parent, addModel.parent);
+  assert.deepEqual(addModel.parent.children, [addModel, refresh]);
   assert.equal(inside(nodes.find((node) => node.textContent === "Run now"), targetDetails), false);
-  assert.equal(inside(nodes.find((node) => node.textContent === "Add model"), targetDetails), false);
   nodes.find((node) => node.textContent === "Run now").click();
   const request = sent.find((item) => item.type === "evaluator_run_queue");
   assert.equal(request.queue[0].model, "glm-exact-id");

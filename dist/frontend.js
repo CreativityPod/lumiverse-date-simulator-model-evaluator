@@ -716,6 +716,7 @@ export function setup(ctx) {
     .dme-input { box-sizing:border-box; width:100%; min-height:36px; padding:7px 9px; color:var(--lumiverse-text); background:var(--lumiverse-bg); border:1px solid var(--lumiverse-border); border-radius:8px; }
     .dme-control-slot { min-height:36px; min-width:0; }
     .dme-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .dme-target-utilities { display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:8px; min-width:0; }
     .dme-button { appearance:none; border:1px solid var(--lumiverse-border); border-radius:8px; padding:8px 11px; background:color-mix(in srgb,var(--lumiverse-bg) 88%,var(--lumiverse-text) 5%); color:var(--lumiverse-text); cursor:pointer; font-weight:600; }
     .dme-button:hover { border-color:var(--lumiverse-accent,#8c7cf0); }
     .dme-button:disabled { opacity:.5; cursor:not-allowed; }
@@ -844,19 +845,23 @@ export function setup(ctx) {
   temperatureField.slot.appendChild(temperatureInput);
   maxTokensField.slot.appendChild(maxTokensInput);
   reasoningField.slot.appendChild(reasoningSelect);
-  targetGrid.append(connectionField.wrapper, modelField.wrapper, suiteField.wrapper, temperatureField.wrapper, maxTokensField.wrapper, reasoningField.wrapper);
   const modeField = field("Comparison mode", "Capability: allow enough headroom. Fixed budget: use identical limits across targets. Neither mode retries automatically.");
   const modeSelect = select([{ value: "capability", label: "Capability" }, { value: "fixed_budget", label: "Fixed output budget" }], "capability");
   modeField.slot.appendChild(modeSelect);
-  targetGrid.appendChild(modeField.wrapper);
+  const addButton = button("Add model");
+  const targetUtilities = element("div", "dme-target-utilities");
+  targetUtilities.append(addButton, refreshButton);
+  targetGrid.append(
+    connectionField.wrapper, modelField.wrapper,
+    suiteField.wrapper, temperatureField.wrapper,
+    maxTokensField.wrapper, targetUtilities,
+    reasoningField.wrapper, modeField.wrapper,
+  );
   const targetAdvanced = generationControls(targetGrid, "Target", 300);
   const targetActions = element("div", "dme-actions");
   const runNowButton = button("Run now", "dme-primary");
-  const addButton = button("Add model");
-  targetActions.append(runNowButton, addButton);
-  const targetUtilities = element("div", "dme-actions");
-  targetUtilities.appendChild(refreshButton);
-  targetSection.append(targetTitle, targetGrid, targetUtilities);
+  targetActions.appendChild(runNowButton);
+  targetSection.append(targetTitle, targetGrid);
 
   const judgeDetails = element("details", "dme-section");
   const judgeSummary = element("summary", "dme-section-title");
