@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Confirm **Add model** inline: briefly change the button to **Added ✓**, identify the queued model, highlight and reveal its new queue row, then focus the connection selector for the next addition. The interaction supports screen readers and reduced-motion preferences.
+
 ## 0.4.0
 
 - Separate behavioral pass/fail decisions from 0–4 quality ratings. A 2/4 is now shown as mixed but usable instead of becoming a failed requirement.

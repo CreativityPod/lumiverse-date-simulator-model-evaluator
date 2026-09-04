@@ -735,6 +735,7 @@ export function setup(ctx) {
   let pendingDeleteId = "";
   let clearingReports = false;
   let countdownInterval = null;
+  let addFeedbackTimeout = null;
 
   const removeStyle = ctx.dom.addStyle(`
     .dme-panel { display:flex; flex-direction:column; gap:14px; padding:14px; color:var(--lumiverse-text); }
@@ -752,6 +753,9 @@ export function setup(ctx) {
     .dme-control-slot { min-height:36px; min-width:0; }
     .dme-actions { display:flex; flex-wrap:wrap; gap:8px; }
     .dme-target-utilities { display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:8px; min-width:0; }
+    .dme-add-button { min-width:92px; }
+    .dme-add-feedback { max-width:260px; color:var(--lumiverse-success,#70b987); font-size:.76rem; line-height:1.35; }
+    .dme-add-feedback[hidden] { display:none; }
     .dme-button { appearance:none; border:1px solid var(--lumiverse-border); border-radius:8px; padding:8px 11px; background:color-mix(in srgb,var(--lumiverse-bg) 88%,var(--lumiverse-text) 5%); color:var(--lumiverse-text); cursor:pointer; font-weight:600; }
     .dme-button:hover { border-color:var(--lumiverse-accent,#8c7cf0); }
     .dme-button:disabled { opacity:.5; cursor:not-allowed; }
@@ -760,6 +764,8 @@ export function setup(ctx) {
     .dme-inline-check { display:flex; gap:8px; align-items:flex-start; font-size:.86rem; }
     .dme-queue,.dme-history { display:flex; flex-direction:column; gap:8px; }
     .dme-queue-row,.dme-history-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:10px; border:1px solid var(--lumiverse-border); border-radius:9px; }
+    .dme-queue-row.dme-just-added { animation:dme-model-added 1.8s ease-out; }
+    @keyframes dme-model-added { 0% { border-color:var(--lumiverse-accent,#725fe5); background:color-mix(in srgb,var(--lumiverse-accent,#725fe5) 20%,transparent); box-shadow:0 0 0 3px color-mix(in srgb,var(--lumiverse-accent,#725fe5) 22%,transparent); } 100% { border-color:var(--lumiverse-border); background:transparent; box-shadow:none; } }
     .dme-model-id { font-weight:650; overflow-wrap:anywhere; }
     .dme-row-meta { color:var(--lumiverse-text-muted); font-size:.76rem; }
     .dme-icon-button { padding:5px 8px; }
@@ -826,7 +832,7 @@ export function setup(ctx) {
     .dme-compare-table { display:flex; flex-direction:column; border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }.dme-compare-row { display:grid; grid-template-columns:minmax(150px,1.5fr) minmax(150px,1.4fr) repeat(3,.55fr) .7fr .4fr; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--lumiverse-border); }.dme-compare-row:last-child { border-bottom:0; }.dme-compare-head { color:var(--lumiverse-text-muted); font-size:.75rem; font-weight:700; }
     .dme-comparison-warning { padding:10px; color:var(--lumiverse-warning,#d5a85f); border:1px solid currentColor; border-radius:8px; }
     @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid,.dme-status-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
-    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}}
+    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}.dme-queue-row.dme-just-added{animation:none;border-color:var(--lumiverse-accent,#725fe5)}}
   `);
   cleanups.push(removeStyle);
 
@@ -883,9 +889,14 @@ export function setup(ctx) {
   const modeField = field("Comparison mode", "Capability: allow enough headroom. Fixed budget: use identical limits across targets. Neither mode retries automatically.");
   const modeSelect = select([{ value: "capability", label: "Capability" }, { value: "fixed_budget", label: "Fixed output budget" }], "capability");
   modeField.slot.appendChild(modeSelect);
-  const addButton = button("Add model", "dme-primary");
+  const addButton = button("Add model", "dme-primary dme-add-button");
+  const addFeedback = element("div", "dme-add-feedback");
+  addFeedback.hidden = true;
+  addFeedback.setAttribute("role", "status");
+  addFeedback.setAttribute("aria-live", "polite");
+  addFeedback.setAttribute("aria-atomic", "true");
   const targetUtilities = element("div", "dme-target-utilities");
-  targetUtilities.append(addButton, refreshButton);
+  targetUtilities.append(addButton, refreshButton, addFeedback);
   targetGrid.append(
     connectionField.wrapper, modelField.wrapper,
     suiteField.wrapper, temperatureField.wrapper,
@@ -909,7 +920,7 @@ export function setup(ctx) {
   const calibrationLabel = element("label", "dme-inline-check");
   const calibrationEnabled = input("checkbox", "");
   calibrationEnabled.checked = true;
-  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with six synthetic examples after grading. Adds six diagnostic calls after grading. Disagreements mark scores provisional; they never block grading."));
+  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with eight synthetic examples after grading. Adds eight diagnostic calls after grading. Disagreements mark scores provisional; they never block grading."));
   const judgeGrid = element("div", "dme-grid");
   const judgeConnectionField = field("Judge connection");
   const judgeModelField = field("Judge model");
@@ -1096,14 +1107,19 @@ export function setup(ctx) {
     remountJudgeModel(savedConfig?.judge?.model || selectedConnection(judgeConnection)?.model || "");
   }
 
-  function renderQueue() {
+  function renderQueue(highlightIndex = -1) {
     queueList.replaceChildren();
     queueCount.textContent = `${queue.length} model${queue.length === 1 ? "" : "s"}`;
     runSelectedButton.disabled = running || queue.length === 0;
     clearButton.disabled = running || queue.length === 0;
     if (!queue.length) queueList.appendChild(element("div", "dme-empty", "No queued models. “Run now” does not require a queue."));
+    let highlightedRow = null;
     queue.forEach((item, index) => {
       const row = element("div", "dme-queue-row");
+      if (index === highlightIndex) {
+        row.className += " dme-just-added";
+        highlightedRow = row;
+      }
       const copy = element("div", "");
       copy.append(element("div", "dme-model-id", item.model), element("div", "dme-row-meta", `${item.connectionName} · ${item.suite} · T ${item.temperature} · ${item.reasoning}`));
       const remove = button("Remove", "dme-icon-button");
@@ -1116,6 +1132,7 @@ export function setup(ctx) {
       row.append(copy, remove);
       queueList.appendChild(row);
     });
+    return highlightedRow;
   }
 
   function renderHistory() {
@@ -1276,8 +1293,23 @@ export function setup(ctx) {
     const target = currentTarget();
     if (!target.connectionId || !target.model) return setStatus("Choose a connection and model before adding it.", 0, true);
     queue.push(target);
-    renderQueue();
+    const addedRow = renderQueue(queue.length - 1);
     saveConfig();
+    targetSection.open = true;
+    addButton.textContent = "Added ✓";
+    addFeedback.textContent = `${target.model} added to the comparison queue. Choose a connection and model to add another.`;
+    addFeedback.hidden = false;
+    const reduceMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    addedRow?.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+    targetConnection.focus?.({ preventScroll: true });
+    if (addFeedbackTimeout !== null) clearTimeout(addFeedbackTimeout);
+    addFeedbackTimeout = setTimeout(() => {
+      addButton.textContent = "Add model";
+      addFeedback.textContent = "";
+      addFeedback.hidden = true;
+      if (addedRow) addedRow.className = addedRow.className.replace(/\s*dme-just-added\b/, "");
+      addFeedbackTimeout = null;
+    }, 3000);
   });
   runNowButton.addEventListener("click", () => launch([currentTarget()]));
   runSelectedButton.addEventListener("click", () => launch(queue));
@@ -1400,6 +1432,7 @@ export function setup(ctx) {
 
   return () => {
     stopCountdown();
+    if (addFeedbackTimeout !== null) clearTimeout(addFeedbackTimeout);
     try { targetModelHandle?.destroy(); } catch { /* best effort */ }
     try { judgeModelHandle?.destroy(); } catch { /* best effort */ }
     for (const handle of mounted.reverse()) {
