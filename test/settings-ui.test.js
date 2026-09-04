@@ -45,7 +45,15 @@ test("settings UI restores and launches local/API targets with independently con
       judge: { enabled: true, connectionId: "local", model: "qwen-exact-id", temperature: 0.6, maxTokens: 16384, timeoutMs: 900000, reasoning: "inherit", parameters: { chat_template_kwargs: { enable_thinking: false } }, calibrate: false },
     },
   });
-  flatten(root).find((node) => node.textContent === "Run now").click();
+  const nodes = flatten(root);
+  const targetDetails = nodes.find((node) => node.textContent === "Target model").parent.parent;
+  const inside = (node, ancestor) => { for (let current = node.parent; current; current = current.parent) if (current === ancestor) return true; return false; };
+  assert.equal(targetDetails.tag, "details");
+  assert.notEqual(targetDetails.open, true);
+  assert.equal(inside(nodes.find((node) => node.textContent === "Refresh"), targetDetails), true);
+  assert.equal(inside(nodes.find((node) => node.textContent === "Run now"), targetDetails), false);
+  assert.equal(inside(nodes.find((node) => node.textContent === "Add model"), targetDetails), false);
+  nodes.find((node) => node.textContent === "Run now").click();
   const request = sent.find((item) => item.type === "evaluator_run_queue");
   assert.equal(request.queue[0].model, "glm-exact-id");
   assert.equal(request.queue[0].temperature, null);

@@ -808,17 +808,16 @@ export function setup(ctx) {
   const hero = element("section", "dme-hero");
   hero.append(element("h2", "", "Headless model benchmark"), element("p", "", "Select any saved connection and model. Runs stay outside chat and do not change Connect."));
 
-  const targetSection = element("section", "dme-section");
-  const targetTitle = element("div", "dme-section-title");
-  targetTitle.append(element("h3", "", "Target model"));
+  const targetSection = element("details", "dme-section");
+  const targetTitle = element("summary", "dme-section-title");
+  targetTitle.append(element("strong", "", "Target model"));
   const refreshButton = button("Refresh");
-  targetTitle.appendChild(refreshButton);
   const targetGrid = element("div", "dme-grid");
   const connectionField = field("Connection", "Supplies provider, URL, and stored credentials.");
   const modelField = field("Model", "Request-local override; the Connect tab is untouched.");
   const suiteField = field("Suite");
   const temperatureField = field("Temperature", "Leave blank to use the provider default; some reasoning models reject this parameter.");
-  const maxTokensField = field("Maximum output tokens", "Reasoning may share this budget. Fit the prompt plus output within the model context window; Date Simulator setup prompts are large. Incomplete outputs remain unscored.");
+  const maxTokensField = field("Maximum output tokens", "Reasoning may share this budget. Keep 16,384 for broad capability tests; 3,000 is suitable when reasoning is off or when you deliberately want a fixed-budget comparison. Incomplete outputs remain unscored.");
   const reasoningField = field("Reasoning override");
   const targetConnection = select([], "");
   const suiteSelect = select([
@@ -854,7 +853,9 @@ export function setup(ctx) {
   const runNowButton = button("Run now", "dme-primary");
   const addButton = button("Add model");
   targetActions.append(runNowButton, addButton);
-  targetSection.append(targetTitle, targetGrid, targetActions);
+  const targetUtilities = element("div", "dme-actions");
+  targetUtilities.appendChild(refreshButton);
+  targetSection.append(targetTitle, targetGrid, targetUtilities);
 
   const judgeDetails = element("details", "dme-section");
   const judgeSummary = element("summary", "dme-section-title");
@@ -939,7 +940,7 @@ export function setup(ctx) {
   const historyList = element("div", "dme-history");
   historySection.append(historyTitle, historyList);
 
-  panel.append(hero, targetSection, judgeDetails, queueSection, runSection, historySection);
+  panel.append(hero, targetSection, targetActions, judgeDetails, queueSection, runSection, historySection);
   tab.root.appendChild(panel);
 
   function selectedConnection(selectNode) {

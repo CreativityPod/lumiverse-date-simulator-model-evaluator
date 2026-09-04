@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Make Target model settings collapsed by default, matching the Semantic judge section, while keeping **Run now** and **Add model** visible.
+- Clarify why the 16,384-token capability default remains safer across reasoning and non-reasoning target models, and when a 3,000-token fixed budget is appropriate.
+
 ## 0.3.0
 
 - Split report status into independent execution, evaluation-coverage and Date Simulator compatibility cards.

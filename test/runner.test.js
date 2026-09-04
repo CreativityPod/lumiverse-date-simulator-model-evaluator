@@ -32,6 +32,7 @@ function responseFor(messages) {
 }
 
 test("normalizes targets, judge settings, and reasoning overrides", () => {
+  assert.equal(normalizeModelTarget({}).maxTokens, 16384);
   assert.deepEqual(reasoningOverride("off"), { source: "off" });
   assert.deepEqual(reasoningOverride("high"), { source: "custom", apiReasoning: true, effort: "high", thinkingDisplay: "auto" });
   assert.equal(reasoningOverride("inherit"), undefined);

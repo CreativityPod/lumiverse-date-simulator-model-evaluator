@@ -1,6 +1,6 @@
 # Date Simulator Model Evaluator
 
-Version **0.3.0** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
+Version **0.3.1** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
 
 ## Scoring
 
@@ -51,7 +51,7 @@ Target and judge controls include:
 | Setting | Default | Notes |
 |---|---|---|
 | Temperature | Omitted | Blank allows provider defaults, including models that reject temperature overrides. |
-| Target output budget | 16,384 | Configurable 400–262,144; the provider's own limit still applies. |
+| Target output budget | 16,384 | Configurable 400–262,144; the provider's own limit still applies. A 3,000-token fixed budget is reasonable when reasoning is off, but can be exhausted by reasoning models before they return a final answer. |
 | Judge output budget | 8,192 | Allow room for both reasoning and structured criteria. |
 | Timeout | 300 seconds each | Independently configurable from 10 to 1,800 seconds; Stop remains available. |
 | Reasoning | Inherit | Off, auto, minimal, low, medium, high, extra high or maximum; provider support varies. |
