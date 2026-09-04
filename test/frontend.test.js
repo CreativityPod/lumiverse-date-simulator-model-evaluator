@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   EVALUATOR_ICON_SVG,
+  coveragePresentation,
+  executionPresentation,
   formatDuration,
   gatePresentation,
   overviewReport,
@@ -42,14 +44,27 @@ test("report badges cannot turn absent semantic evidence into pass or failure", 
   assert.equal(resultVerdict(result, { schemaVersion: 2, judge: { items: [{ id: "one", criteria: [{ id: "behavior", verdict: "fail" }] }] } }), "fail");
 });
 
-test("presents hard readiness outcomes independently from prose scores", () => {
+test("presents scoped compatibility outcomes independently from execution and coverage", () => {
   assert.deepEqual(readinessPresentation({ readiness: "ready" }), {
     code: "ready",
-    label: "Ready for Date Simulator",
+    label: "Full suite passed — Ready",
     state: "pass",
   });
+  assert.equal(readinessPresentation({ compatibility: { code: "tested_pass_limited" } }, { id: "quick" }).label, "Quick scan passed — limited coverage");
+  assert.equal(readinessPresentation({ compatibility: { code: "critical_concern" } }).state, "inconclusive");
+  assert.equal(readinessPresentation({ compatibility: { code: "not_ready_confirmed_critical" } }).state, "fail");
   assert.equal(readinessPresentation({ readiness: "not_ready_private_profile" }).state, "fail");
   assert.equal(readinessPresentation({ readiness: "not_ready_numbered_questions" }).label, "Not ready: numbered questions");
+
+  const run = {
+    suite: { targetCalls: 7 },
+    aggregate: {
+      completedTests: 7, incompleteTests: 0, runtimeErrors: 0, unattemptedTests: 0,
+      execution: { complete: true }, coverage: { gates: { tested: 5, decided: 5, total: 7 }, semantic: { assessed: 32, total: 36 } },
+    },
+  };
+  assert.deepEqual(executionPresentation(run), { state: "pass", label: "7/7 responses completed", detail: "0 incomplete (0 truncated, 0 empty) · 0 errors · 0 not attempted" });
+  assert.deepEqual(coveragePresentation(run), { state: "inconclusive", label: "5/7 readiness gates tested", detail: "5 gate verdicts decided · Semantic grading 32/36 criteria assessed" });
 });
 
 test("formats duration and score bands", () => {
@@ -113,10 +128,11 @@ test("distribution excludes errors and unscored responses, and counts repeated a
 
 test("overview renders counted markers, a separate mean marker, and Not tested labels", (context) => {
   class Node {
-    constructor(tag) { this.tag = tag; this.children = []; this.style = {}; this.attributes = {}; }
+    constructor(tag) { this.tag = tag; this.children = []; this.style = {}; this.attributes = {}; this.listeners = {}; }
     append(...nodes) { this.children.push(...nodes); }
     appendChild(node) { this.append(node); return node; }
     setAttribute(key, value) { this.attributes[key] = value; }
+    addEventListener(type, handler) { this.listeners[type] = handler; }
   }
   const original = Object.getOwnPropertyDescriptor(globalThis, "document");
   Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: (tag) => new Node(tag) } });
@@ -124,7 +140,12 @@ test("overview renders counted markers, a separate mean marker, and Not tested l
     if (original) Object.defineProperty(globalThis, "document", original);
     else delete globalThis.document;
   });
-  const root = overviewReport({ status: "complete", aggregate: { gates: { continuity: "inconclusive" } }, results: [0, 100, 100, 100, 100].map(scoredResult) });
+  let reviewed = "";
+  const finding = { resultId: "fixture-0.r1", testId: "fixture-0", id: "agency", label: "User agency", severity: "critical", source: "semantic", reason: "The response supplied a user action.", evidence: "You agree.", evidenceSource: "response" };
+  const root = overviewReport({ status: "complete", aggregate: {
+    gates: { continuity: "inconclusive" }, compatibility: { code: "critical_concern", primaryFinding: finding, failureCount: 1 },
+    failureFindings: [finding], criticalFindings: [{ ...finding, confirmation: "review_required" }],
+  }, results: [0, 100, 100, 100, 100].map(scoredResult) }, { reviewFailure: (resultId) => { reviewed = resultId; } });
   const flatten = (node) => [node, ...node.children.flatMap(flatten)];
   const nodes = flatten(root);
   const markers = nodes.filter((node) => node.className === "dme-score-count");
@@ -133,4 +154,7 @@ test("overview renders counted markers, a separate mean marker, and Not tested l
   assert.ok(nodes.some((node) => node.textContent === "4 results at 100"));
   assert.ok(nodes.some((node) => node.textContent === "– Not tested"));
   assert.ok(nodes.some((node) => node.textContent === "Mechanical score distribution across completed tests"));
+  const review = nodes.find((node) => node.textContent === "View Date Simulator evidence");
+  review.listeners.click();
+  assert.equal(reviewed, "fixture-0.r1");
 });

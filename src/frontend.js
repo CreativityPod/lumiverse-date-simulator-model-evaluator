@@ -1,8 +1,13 @@
 export const EVALUATOR_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/><path d="M2 19h22"/></svg>';
 
 const READINESS_LABELS = {
-  ready: "Ready for Date Simulator",
-  partially_compatible: "Partially compatible",
+  ready: "Full suite passed — Ready",
+  tested_pass_limited: "Tested requirements passed — limited coverage",
+  compatible_with_issues: "Compatible with issues",
+  critical_concern: "Critical concern — review required",
+  not_ready_confirmed_critical: "Not ready — confirmed critical failure",
+  evaluation_incomplete: "Evaluation incomplete",
+  partially_compatible: "Partially compatible (legacy)",
   not_ready_numbered_questions: "Not ready: numbered questions",
   not_ready_private_profile: "Not ready: private profile",
   not_ready_critical: "Not ready: critical failure",
@@ -59,12 +64,53 @@ function input(type, value, attributes = {}) {
   return node;
 }
 
-export function readinessPresentation(aggregate) {
-  const readiness = aggregate?.readiness ?? "partially_compatible";
+export function readinessPresentation(aggregate, suite = null) {
+  const readiness = aggregate?.compatibility?.code ?? aggregate?.readiness ?? "evaluation_incomplete";
+  const primary = aggregate?.compatibility?.primaryFinding;
+  let label = READINESS_LABELS[readiness] ?? "Compatibility unknown";
+  if (readiness === "tested_pass_limited" && suite?.id === "quick") label = "Quick scan passed — limited coverage";
+  else if (readiness === "tested_pass_limited" && suite?.id === "standard") label = "Standard comparison passed — limited coverage";
+  else if ((readiness === "critical_concern" || readiness === "not_ready_confirmed_critical") && primary?.label) {
+    label = `${readiness === "critical_concern" ? "Critical concern" : "Not ready"}: ${primary.label}`;
+  }
   return {
     code: readiness,
-    label: READINESS_LABELS[readiness] ?? "Compatibility unknown",
-    state: readiness === "ready" ? "pass" : readiness === "partially_compatible" ? "inconclusive" : "fail",
+    label,
+    state: ["ready", "tested_pass_limited"].includes(readiness) ? "pass"
+      : ["not_ready_confirmed_critical", "not_ready_numbered_questions", "not_ready_private_profile", "not_ready_critical"].includes(readiness) ? "fail" : "inconclusive",
+  };
+}
+
+export function executionPresentation(run) {
+  const aggregate = run?.aggregate ?? {};
+  const planned = run?.suite?.targetCalls ?? aggregate.plannedTests ?? aggregate.attemptedTests ?? 0;
+  const completed = aggregate.completedTests ?? 0;
+  const complete = aggregate.execution?.complete ?? (planned > 0 && completed === planned
+    && !(aggregate.incompleteTests || aggregate.runtimeErrors || aggregate.unattemptedTests));
+  return {
+    state: complete ? "pass" : completed ? "inconclusive" : "fail",
+    label: `${completed}/${planned} responses completed`,
+    detail: `${aggregate.incompleteTests ?? 0} incomplete (${aggregate.truncatedTests ?? 0} truncated, ${aggregate.emptyTests ?? 0} empty) · ${aggregate.runtimeErrors ?? 0} errors · ${aggregate.unattemptedTests ?? Math.max(0, planned - (aggregate.attemptedTests ?? 0))} not attempted`,
+  };
+}
+
+export function coveragePresentation(run) {
+  const aggregate = run?.aggregate ?? {};
+  const values = Object.values(aggregate.gates ?? {});
+  const recordedGates = new Set((run?.results ?? []).flatMap((result) => result.gates ?? []));
+  const gates = aggregate.coverage?.gates ?? {
+    tested: recordedGates.size || values.filter((value) => value !== "not_tested").length,
+    decided: values.filter((value) => value === "pass" || value === "fail").length,
+    total: values.length || Object.keys(GATE_LABELS).length,
+  };
+  const semantic = aggregate.coverage?.semantic ?? Object.values(aggregate.families ?? {}).reduce((total, family) => ({
+    assessed: total.assessed + (family.behaviorCoverage?.assessed ?? 0) + (family.qualityCoverage?.assessed ?? 0),
+    total: total.total + (family.behaviorCoverage?.total ?? 0) + (family.qualityCoverage?.total ?? 0),
+  }), { assessed: 0, total: 0 });
+  return {
+    state: gates.tested === gates.total && gates.decided === gates.total ? "pass" : "inconclusive",
+    label: `${gates.tested}/${gates.total} readiness gates tested`,
+    detail: `${gates.decided} gate verdicts decided · Semantic grading ${semantic.assessed}/${semantic.total} criteria assessed`,
   };
 }
 
@@ -304,14 +350,39 @@ function reportEnvironment(run) {
   return grid;
 }
 
-export function overviewReport(run) {
+function statusCard(title, presentation) {
+  const card = element("article", "dme-status-card");
+  card.append(
+    element("span", "dme-score-label", title),
+    verdictBadge(presentation.state, presentation.label),
+    element("span", "dme-hint", presentation.detail),
+  );
+  return card;
+}
+
+function compatibilityDetail(aggregate) {
+  const code = aggregate?.compatibility?.code ?? aggregate?.readiness;
+  const coverage = aggregate?.coverage?.gates;
+  if (code === "ready") return "Every readiness gate passed with complete target execution.";
+  if (code === "tested_pass_limited") return `Every tested readiness gate passed; ${coverage?.notTested ?? "some"} gate${coverage?.notTested === 1 ? " was" : "s were"} not tested by this suite.`;
+  if (code === "compatible_with_issues") return `${aggregate?.compatibility?.failureCount ?? "One or more"} noncritical requirement failure${aggregate?.compatibility?.failureCount === 1 ? "" : "s"} found; inspect the findings below.`;
+  if (code === "critical_concern") return "A semantic judge flagged a critical requirement once. Review the rationale and evidence before treating it as a confirmed incompatibility.";
+  if (code === "not_ready_confirmed_critical") return "A critical failure was confirmed by a deterministic check, a repeated result, or a regrade.";
+  if (["not_ready_numbered_questions", "not_ready_private_profile", "not_ready_critical"].includes(code)) return "Legacy report verdict; inspect its Date Simulator evidence for the triggering failure.";
+  return "The available execution or grading evidence is insufficient for a compatibility verdict.";
+}
+
+export function overviewReport(run, callbacks = {}) {
   const root = element("div", "dme-report-view");
   const aggregate = run.aggregate ?? {};
-  const readiness = readinessPresentation(aggregate);
-  const hero = element("section", `dme-report-hero dme-report-${readiness.state}`);
+  const readiness = readinessPresentation(aggregate, run.suite);
+  const execution = executionPresentation(run);
+  const coverage = coveragePresentation(run);
+  const hero = element("section", "dme-report-hero dme-status-grid");
   hero.append(
-    verdictBadge(readiness.state, readiness.label),
-    element("p", "", `Completed ${aggregate.completedTests ?? 0}/${run.suite?.targetCalls ?? aggregate.attemptedTests ?? 0} target calls · ${aggregate.incompleteTests ?? 0} incomplete (${aggregate.truncatedTests ?? 0} truncated, ${aggregate.emptyTests ?? 0} empty) · ${aggregate.runtimeErrors ?? 0} errors.`),
+    statusCard("Execution", execution),
+    statusCard("Evaluation coverage", coverage),
+    statusCard("Date Simulator compatibility", { ...readiness, detail: compatibilityDetail(aggregate) }),
   );
 
   const scoreGrid = element("section", "dme-score-grid");
@@ -349,6 +420,32 @@ export function overviewReport(run) {
   gates.appendChild(gateGrid);
   gates.appendChild(element("p", "dme-hint", "Not tested: no test was run. Inconclusive: no usable verdict. A pass requires all associated criteria to pass. Incomplete or ungraded requirements cannot pass a gate."));
 
+  const findings = aggregate.failureFindings ?? [];
+  let findingSection = null;
+  if (findings.length) {
+    findingSection = element("section", "dme-report-section");
+    findingSection.appendChild(element("h3", "", "Compatibility findings"));
+    const confirmations = new Map((aggregate.criticalFindings ?? []).map((item) => [`${item.resultId}::${item.id}`, item.confirmation]));
+    for (const finding of findings) {
+      const confirmation = confirmations.get(`${finding.resultId}::${finding.id}`);
+      const state = finding.severity === "critical" && confirmation !== "review_required" ? "fail" : "inconclusive";
+      const label = finding.severity === "critical"
+        ? confirmation === "review_required" ? "Critical concern · review required" : "Confirmed critical failure"
+        : `${finding.severity || "Noncritical"} issue`;
+      const item = element("article", "dme-finding");
+      const head = element("div", "dme-finding-head");
+      head.append(verdictBadge(state, label), element("strong", "", `${finding.testId} · ${finding.label}`), element("span", "dme-severity", finding.source));
+      item.append(head, element("p", "", finding.reason || "The requirement did not pass."));
+      if (finding.evidence) item.appendChild(element("pre", "dme-evidence", `${finding.evidenceSource}: ${finding.evidence}`));
+      if (callbacks.reviewFailure) {
+        const review = button("View Date Simulator evidence", "dme-icon-button");
+        review.addEventListener("click", () => callbacks.reviewFailure(finding.resultId));
+        item.appendChild(review);
+      }
+      findingSection.appendChild(item);
+    }
+  }
+
   const profiles = element("section", "dme-report-section");
   profiles.appendChild(element("h3", "", "Capability profile"));
   profiles.append(
@@ -366,7 +463,9 @@ export function overviewReport(run) {
     scoreDistributionStrip(run, "roleplay", "Roleplay objective"),
     scoreDistributionStrip(run, "writing", "Writing objective"),
   );
-  root.append(hero, scoreGrid, gates, profiles, distribution);
+  root.append(hero, scoreGrid, gates);
+  if (findingSection) root.appendChild(findingSection);
+  root.append(profiles, distribution);
   if (run.schemaVersion >= 2) {
     root.appendChild(element("p", "dme-hint", "LLM judgments are estimates, not human validation. Inspect evidence, compare paraphrases and failures, and calibrate your chosen judge on the supplied review corpus before relying on rankings. Inherited connection settings and server defaults can affect comparability."));
     for (const warning of run.judge?.warnings ?? []) root.appendChild(element("p", "dme-comparison-warning", warning));
@@ -375,15 +474,17 @@ export function overviewReport(run) {
   return root;
 }
 
-export function evidenceReport(run, family) {
+export function evidenceReport(run, family, focusResultId = "") {
   const root = element("div", "dme-report-view");
-  const results = (run.results ?? []).filter((result) => result.family === family);
+  const results = (run.results ?? []).filter((result) => result.family === family)
+    .sort((left, right) => Number(right.resultId === focusResultId) - Number(left.resultId === focusResultId));
   if (!results.length) {
     root.appendChild(element("p", "dme-empty", "No results are available for this section."));
     return root;
   }
   for (const result of results) {
     const details = element("details", "dme-result");
+    if (focusResultId && result.resultId === focusResultId) details.open = true;
     const summary = element("summary", "dme-result-summary");
     const verdict = resultVerdict(result, run);
     summary.append(
@@ -409,11 +510,22 @@ export function evidenceReport(run, family) {
         const item = judgeItem?.criteria?.find((entry) => entry.id === criterion.id);
         const finding = element("article", "dme-finding dme-judge-finding");
         const heading = element("div", "dme-finding-head");
-        heading.append(verdictBadge(item?.verdict === "uncertain" ? "inconclusive" : item?.verdict ?? "inconclusive", item?.verdict ?? "Not assessed"), element("strong", "", criterion.label));
+        heading.append(
+          verdictBadge(item?.verdict === "uncertain" ? "inconclusive" : item?.verdict ?? "inconclusive", item?.verdict ?? "Not assessed"),
+          element("strong", "", criterion.label),
+          element("span", "dme-severity", `${criterion.severity} · semantic`),
+        );
         finding.append(heading, element("p", "dme-hint", criterion.instruction));
         if (item) {
           finding.appendChild(element("p", "", `${item.rating == null ? "" : `${item.rating}/4 · `}${item.reason}`));
           finding.appendChild(element("pre", "dme-evidence", item.evidence ? `${item.evidenceSource === "unverified" ? "Unverified quote" : item.evidenceSource}: ${item.evidence}` : item.evidenceSource === "absence" ? "Absence assessed across response" : "Rationale-based judgment; no quote supplied"));
+          if (item.verdict === "fail" && criterion.severity === "critical") {
+            const aggregateFinding = run.aggregate?.criticalFindings?.find((entry) => entry.resultId === result.resultId && entry.id === criterion.id);
+            finding.appendChild(element("p", aggregateFinding?.confirmation === "review_required" ? "dme-comparison-warning" : "dme-error",
+              aggregateFinding?.confirmation === "review_required"
+                ? "Critical concern from one semantic judgment; review required before treating it as confirmed."
+                : `Confirmed critical failure (${(aggregateFinding?.confirmation ?? "stored verdict").replaceAll("_", " ")}).`));
+          }
         }
         body.appendChild(finding);
       }
@@ -485,19 +597,19 @@ function openRunReport(ctx, run, callbacks = {}) {
   tabs.setAttribute("role", "tablist");
   const body = element("div", "dme-report-body");
   const views = [
-    ["overview", "Overview", () => overviewReport(run)],
-    ["date", "Date Simulator", () => evidenceReport(run, "date_simulator")],
+    ["overview", "Overview", () => overviewReport(run, { reviewFailure: (resultId) => activate("date", resultId) })],
+    ["date", "Date Simulator", (focusResultId) => evidenceReport(run, "date_simulator", focusResultId)],
     ["roleplay", "Roleplay", () => evidenceReport(run, "roleplay")],
     ["writing", "Writing", () => evidenceReport(run, "writing")],
     ["environment", "Environment", () => reportEnvironment(run)],
   ];
-  function activate(id) {
+  function activate(id, focusResultId = "") {
     for (const tabButton of tabs.children) {
       const active = tabButton.dataset.tab === id;
       tabButton.setAttribute("aria-selected", String(active));
       tabButton.classList.toggle("dme-active", active);
     }
-    body.replaceChildren(views.find((view) => view[0] === id)[2]());
+    body.replaceChildren(views.find((view) => view[0] === id)[2](focusResultId));
   }
   for (const [id, label] of views) {
     const tabButton = button(label, "dme-tab");
@@ -525,11 +637,11 @@ function openComparisonReport(ctx, runs) {
   ));
   const table = element("div", "dme-compare-table");
   const header = element("div", "dme-compare-row dme-compare-head");
-  for (const label of ["Model", "Readiness", "Date protocol", "RP quality", "Writing quality", "Complete", "Time"]) header.appendChild(element("span", "", label));
+  for (const label of ["Model", "Compatibility", "Date protocol", "RP quality", "Writing quality", "Complete", "Time"]) header.appendChild(element("span", "", label));
   table.appendChild(header);
   for (const run of runs) {
     const row = element("div", "dme-compare-row");
-    const readiness = readinessPresentation(run.aggregate);
+    const readiness = readinessPresentation(run.aggregate, run.suite);
     row.append(
       element("strong", "", run.target.model),
       verdictBadge(readiness.state, readiness.label),
@@ -635,7 +747,10 @@ export function setup(ctx) {
     .dme-tab.dme-active { color:var(--lumiverse-accent,#8c7cf0); border-color:var(--lumiverse-accent,#8c7cf0); }
     .dme-report-body { padding:14px 16px 22px; overflow:auto; }
     .dme-report-view { display:flex; flex-direction:column; gap:14px; }
-    .dme-report-hero { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:13px; border:1px solid var(--lumiverse-border); border-radius:10px; }
+    .dme-report-hero { padding:0; }
+    .dme-status-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .dme-status-card { display:flex; flex-direction:column; align-items:flex-start; gap:7px; min-width:0; padding:13px; border:1px solid var(--lumiverse-border); border-radius:10px; }
+    .dme-status-card .dme-verdict { white-space:normal; }
     .dme-report-fail { border-color:color-mix(in srgb,var(--lumiverse-danger,#e57979) 55%,var(--lumiverse-border)); }
     .dme-report-pass { border-color:color-mix(in srgb,var(--lumiverse-success,#70b987) 55%,var(--lumiverse-border)); }
     .dme-score-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
@@ -673,7 +788,7 @@ export function setup(ctx) {
     .dme-env-grid { display:grid; grid-template-columns:minmax(130px,.35fr) minmax(0,1fr); gap:8px 14px; margin:0; }.dme-env-grid dt { color:var(--lumiverse-text-muted); }.dme-env-grid dd { margin:0; overflow-wrap:anywhere; }
     .dme-compare-table { display:flex; flex-direction:column; border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }.dme-compare-row { display:grid; grid-template-columns:minmax(150px,1.5fr) minmax(150px,1.4fr) repeat(3,.55fr) .7fr .4fr; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--lumiverse-border); }.dme-compare-row:last-child { border-bottom:0; }.dme-compare-head { color:var(--lumiverse-text-muted); font-size:.75rem; font-weight:700; }
     .dme-comparison-warning { padding:10px; color:var(--lumiverse-warning,#d5a85f); border:1px solid currentColor; border-radius:8px; }
-    @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
+    @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid,.dme-status-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
     @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}}
   `);
   cleanups.push(removeStyle);
@@ -969,10 +1084,10 @@ export function setup(ctx) {
     for (const run of history.slice(0, 20)) {
       const row = element("div", "dme-history-row");
       const copy = element("div", "");
-      const readiness = readinessPresentation(run.aggregate);
+      const readiness = readinessPresentation(run.aggregate, run.suite);
       copy.append(
         element("div", "dme-model-id", run.target?.model || "Unknown model"),
-        element("div", "dme-row-meta", `${READINESS_LABELS[run.aggregate?.readiness] ?? run.status} · ${run.suite?.name ?? run.suite?.id} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : "queued"}`),
+        element("div", "dme-row-meta", `${readiness.label || run.status} · ${run.suite?.name ?? run.suite?.id} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : "queued"}`),
       );
       const open = button("Open report", "dme-icon-button");
       open.disabled = running || pendingDeleteId === run.id;

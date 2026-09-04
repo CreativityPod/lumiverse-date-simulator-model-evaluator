@@ -399,10 +399,16 @@ export async function regradeRun(spindleApi, source, judgeValue, options = {}) {
   if (!source.results.some((result) => result.runtime?.status === "success" && source.prompts[result.promptRef] && result.criteria?.length)) {
     throw new Error("No completed target responses are available to grade. Incomplete target output requires a new target run.");
   }
+  const priorCriticalFailureKeys = [...new Set(source.results.flatMap((result) => {
+    const grades = source.judge?.items?.find((item) => item.id === result.resultId)?.criteria ?? [];
+    return (result.criteria ?? []).filter((criterion) => criterion.severity === "critical"
+      && grades.some((grade) => grade.id === criterion.id && grade.verdict === "fail"))
+      .map((criterion) => `${result.testId}::${criterion.id}`);
+  }))];
   const run = {
     ...JSON.parse(JSON.stringify(source)), id: runId(), sourceRunId: source.id, mode: "regrade",
     reusedTargetCalls: source.results.length, status: "running", startedAt: new Date().toISOString(), completedAt: "", durationMs: 0,
-    judge: { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, items: [], attempts: [], errors: [], warnings: [] },
+    judge: { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, priorCriticalFailureKeys, items: [], attempts: [], errors: [], warnings: [] },
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, errors: [],
   };
   const started = Date.now();

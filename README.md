@@ -1,6 +1,6 @@
 # Date Simulator Model Evaluator
 
-Version **0.2.2** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
+Version **0.3.0** is a headless Lumiverse Spindle extension for evaluating Date Simulator v1.5.5, roleplay, and creative writing with local or hosted models. It uses saved connections and exact request-local model IDs. It does not require a chat or change Connect settings.
 
 ## Scoring
 
@@ -12,7 +12,15 @@ Three separate results prevent format compliance from being mistaken for intelli
 
 The main Date Simulator score shows mechanical protocol compliance, including when no judge is enabled. Semantic behavior is shown separately as the percentage of assessed semantic requirements met. The Roleplay and Writing scores are assessed quality ratings. Task compliance is also shown separately. Missing, uncertain or rejected grades never become zeroes or passes; coverage remains visible. Without a judge, semantic behavior and quality remain **Not assessed**.
 
-A gate passes only when all associated checks pass. A failure affects its own gate, not every gate touched by the fixture. Numbered-question and private-profile failures, and critical Date Simulator violations, cannot be averaged away by prose quality. Quick and Standard omit some gates and cannot establish full readiness.
+A gate passes only when all associated checks pass. A failure affects its own gate, not every gate touched by the fixture. Numbered-question and private-profile failures, and critical Date Simulator violations, cannot be averaged away by prose quality.
+
+The report presents three independent status cards:
+
+- **Execution** says how many target requests returned complete responses and separately counts incomplete, truncated, empty, failed and unattempted calls.
+- **Evaluation coverage** says how many readiness gates were actually tested and decided, plus the exact number of semantic criteria assessed.
+- **Date Simulator compatibility** scopes its conclusion to the evidence. A successful Quick or Standard suite says that its tested requirements passed with limited coverage; only a complete suite with every readiness gate passed says **Ready**. Noncritical failures produce **Compatible with issues**, while missing or unresolved evidence produces **Evaluation incomplete**.
+
+Deterministic critical failures are confirmed immediately. One semantic critical judgment produces **Critical concern — review required**. It becomes **Not ready — confirmed critical failure** only when the same requirement fails in repeated test results or again when saved responses are regraded. Reports list each triggering test, rule, source, rationale and evidence; **View Date Simulator evidence** opens the corresponding expanded result.
 
 ## Suites and cost
 

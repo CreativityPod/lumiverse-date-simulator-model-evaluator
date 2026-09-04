@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Split report status into independent execution, evaluation-coverage and Date Simulator compatibility cards.
+- Replace the ambiguous partial-compatibility verdict with scoped passes, noncritical issues, unresolved evaluations, semantic critical concerns and confirmed critical failures.
+- Treat a deterministic critical failure as confirmed; require a repeated result or regrade agreement to confirm a semantic critical failure.
+- Show triggering tests, rule source, rationale and evidence on the overview, with a direct action that opens the expanded Date Simulator result.
+- Bump scorer version to 2.1.0 while retaining legacy verdict display support.
+
 ## 0.2.2
 
 - Restore the Date Simulator protocol score on the main report and comparison cards; keep semantic behavior separate.
