@@ -568,12 +568,16 @@ function openRunReport(ctx, run, callbacks = {}) {
   );
   const reportActions = element("div", "dme-report-actions");
   const deleteReport = button("Delete this report", "dme-danger");
+  deleteReport.disabled = callbacks.readonly === true;
+  if (deleteReport.disabled) deleteReport.title = "Deletion is unavailable while an evaluation is running.";
   deleteReport.addEventListener("click", () => {
     callbacks.requestDelete?.(run, () => modal.dismiss());
   });
   const gradeSaved = button(run.judge?.items?.length ? "Regrade saved responses" : "Grade saved responses", "dme-primary");
-  gradeSaved.disabled = !(run.schemaVersion >= 2) || !(run.results ?? []).some((result) => result.runtime?.status === "success");
-  gradeSaved.title = "Use the judge selected in Evaluator settings. Makes judge calls only; preserves the original report and target responses.";
+  gradeSaved.disabled = callbacks.readonly === true || !(run.schemaVersion >= 2) || !(run.results ?? []).some((result) => result.runtime?.status === "success");
+  gradeSaved.title = callbacks.readonly === true
+    ? "Regrading is unavailable while an evaluation is running."
+    : "Use the judge selected in Evaluator settings. Makes judge calls only; preserves the original report and target responses.";
   gradeSaved.addEventListener("click", () => callbacks.requestGrade?.(run, () => modal.dismiss()));
   const exportSummary = button("Export summary JSON");
   exportSummary.addEventListener("click", () => downloadJson(`model-evaluator-${run.id}-summary.json`, {
@@ -847,7 +851,7 @@ export function setup(ctx) {
   const modeField = field("Comparison mode", "Capability: allow enough headroom. Fixed budget: use identical limits across targets. Neither mode retries automatically.");
   const modeSelect = select([{ value: "capability", label: "Capability" }, { value: "fixed_budget", label: "Fixed output budget" }], "capability");
   modeField.slot.appendChild(modeSelect);
-  const addButton = button("Add model");
+  const addButton = button("Add model", "dme-primary");
   const targetUtilities = element("div", "dme-target-utilities");
   targetUtilities.append(addButton, refreshButton);
   targetGrid.append(
@@ -1096,7 +1100,7 @@ export function setup(ctx) {
         element("div", "dme-row-meta", `${readiness.label || run.status} · ${run.suite?.name ?? run.suite?.id} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : "queued"}`),
       );
       const open = button("Open report", "dme-icon-button");
-      open.disabled = running || pendingDeleteId === run.id;
+      open.disabled = pendingReportId === run.id || pendingDeleteId === run.id;
       open.addEventListener("click", () => {
         pendingReportId = run.id;
         open.disabled = true;
@@ -1324,7 +1328,12 @@ export function setup(ctx) {
     }
     if (payload?.type === "evaluator_run_detail" && payload.run) {
       pendingReportId = "";
-      openRunReport(ctx, payload.run, { requestDelete, requestGrade });
+      openRunReport(ctx, payload.run, { requestDelete, requestGrade, readonly: running });
+      renderHistory();
+    }
+    if (payload?.type === "evaluator_run_detail_error") {
+      pendingReportId = "";
+      setStatus(payload.message || "That stored report could not be loaded.", null, true);
       renderHistory();
     }
     if (payload?.type === "evaluator_run_deleted") {

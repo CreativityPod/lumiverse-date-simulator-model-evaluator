@@ -315,10 +315,14 @@ spindle.onFrontendMessage(async (payload, userId) => {
     const active = activeQueues.get(userKey(userId));
     if (active) active.controller.abort();
   } else if (type === "evaluator_get_run") {
-    const run = await loadRun(payload.id);
-    send(run
-      ? { type: "evaluator_run_detail", run }
-      : { type: "evaluator_error", message: "That stored run could not be found." }, userId);
+    try {
+      const run = await loadRun(payload.id);
+      send(run
+        ? { type: "evaluator_run_detail", run }
+        : { type: "evaluator_run_detail_error", id: payload.id, message: "That stored run could not be found." }, userId);
+    } catch (error) {
+      send({ type: "evaluator_run_detail_error", id: payload.id, message: `Could not load that report: ${String(error?.message ?? error)}` }, userId);
+    }
   } else if (type === "evaluator_delete_run") {
     if (activeQueues.has(userKey(userId))) {
       send({ type: "evaluator_error", message: "Wait for the active evaluation to finish or stop it before deleting reports." }, userId);

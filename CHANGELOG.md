@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Give **Add model** the same primary color as **Run now**.
+- Keep **Open report** available during active evaluations. Reports opened during a run remain viewable and exportable while delete and regrade controls stay disabled.
+
 ## 0.3.2
 
 - Place **Add model** and **Refresh** in a vertical action area beside the target output-limit guidance. Both stay close to the model selector inside the collapsible Target model section, with **Refresh** below **Add model**; **Run now** remains visible while the section is collapsed.

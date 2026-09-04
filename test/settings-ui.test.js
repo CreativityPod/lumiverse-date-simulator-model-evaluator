@@ -26,13 +26,17 @@ function fakeDocument(context) {
 test("settings UI restores and launches local/API targets with independently configured judge", (context) => {
   fakeDocument(context);
   const root = new FakeNode("div");
+  const modals = [];
   const sent = [];
   let receive;
   const ctx = {
     deferReady() {}, ready() {}, sendToBackend: (payload) => sent.push(payload),
     onBackendMessage: (callback) => { receive = callback; return () => {}; },
     dom: { addStyle: () => () => {}, cleanup() {} },
-    ui: { registerDrawerTab: () => ({ root, onActivate: () => () => {}, destroy() {} }) },
+    ui: {
+      registerDrawerTab: () => ({ root, onActivate: () => () => {}, destroy() {} }),
+      showModal: () => { const modal = { root: new FakeNode("div"), dismiss() {} }; modals.push(modal); return modal; },
+    },
   };
   const cleanup = setup(ctx);
   receive({
@@ -56,6 +60,7 @@ test("settings UI restores and launches local/API targets with independently con
   assert.equal(inside(addModel, targetDetails), true);
   assert.equal(refresh.parent, addModel.parent);
   assert.deepEqual(addModel.parent.children, [addModel, refresh]);
+  assert.match(addModel.className, /dme-primary/);
   assert.equal(inside(nodes.find((node) => node.textContent === "Run now"), targetDetails), false);
   nodes.find((node) => node.textContent === "Run now").click();
   const request = sent.find((item) => item.type === "evaluator_run_queue");
@@ -71,6 +76,24 @@ test("settings UI restores and launches local/API targets with independently con
   assert.equal(request.judge.calibrate, false);
   assert.equal(JSON.parse(request.judge.parameters).chat_template_kwargs.enable_thinking, false);
   assert.equal(request.timeoutMs, undefined);
+  const liveReport = {
+    id: "saved-run", schemaVersion: 2, status: "complete", startedAt: new Date(0).toISOString(),
+    target: { model: "completed-model", provider: "openai", connectionName: "API" },
+    suite: { id: "quick", name: "Quick", targetCalls: 1 }, aggregate: { completedTests: 1, families: {}, gates: {} },
+    results: [{ resultId: "one", testId: "one", title: "One", family: "date_simulator", runtime: { status: "success" }, score: { assertions: [] }, criteria: [] }],
+  };
+  receive({ type: "evaluator_run_complete", run: liveReport });
+  const openReport = flatten(root).find((node) => node.textContent === "Open report");
+  assert.notEqual(openReport.disabled, true);
+  openReport.click();
+  assert.ok(sent.some((item) => item.type === "evaluator_get_run" && item.id === liveReport.id));
+  receive({ type: "evaluator_run_detail", run: liveReport });
+  const reportNodes = flatten(modals.at(-1).root);
+  assert.equal(reportNodes.find((node) => node.textContent === "Delete this report").disabled, true);
+  assert.equal(reportNodes.find((node) => node.textContent === "Grade saved responses").disabled, true);
+  assert.notEqual(reportNodes.find((node) => node.textContent === "Export full evidence").disabled, true);
+  receive({ type: "evaluator_run_detail_error", id: "missing", message: "Report missing" });
+  assert.equal(flatten(root).find((node) => node.textContent === "Run now").disabled, true);
   receive({ type: "evaluator_error", message: "Simulated server rejection" });
   const parameters = flatten(root).filter((node) => node.tag === "textarea");
   parameters[0].value = "not JSON";
