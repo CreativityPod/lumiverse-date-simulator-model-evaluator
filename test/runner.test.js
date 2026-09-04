@@ -92,12 +92,16 @@ test("multi-turn fixtures retain actual output and isolate repetitions", async (
   let counter = 0;
   const run = createRun({ connectionId: "local", provider: "custom", model: "local", suite: "standard" }, { enabled: false });
   await executeRun({ generate: { raw: async () => ({ content: `actual-output-${++counter}` }) } }, run);
-  assert.equal(counter, 30);
+  assert.equal(counter, 32);
   const turnTwo = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 1 && item.turn === 2);
   const turnOne = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 1 && item.turn === 1);
   assert.equal(run.prompts[turnTwo.promptRef].at(-2).content, turnOne.response.content);
   const repetitionTwo = run.results.find((item) => item.testId === "DSC-CONT-001" && item.repetition === 2 && item.turn === 1);
   assert.ok(!run.prompts[repetitionTwo.promptRef].some((message) => message.content.startsWith("actual-output-")));
+  const resetFollowUp = run.results.find((item) => item.testId === "DSC-CMD-001" && item.repetition === 1 && item.turn === 2);
+  assert.match(run.prompts[resetFollowUp.promptRef][0].content, /PROMPT PHASE: setup/);
+  assert.deepEqual(resetFollowUp.criteria.filter((item) => item.id.startsWith("reset-")).map((item) => item.id), ["reset-isolation", "reset-profile-content"]);
+  assert.deepEqual(resetFollowUp.score.assertions.map((item) => item.id.split(".")[0]), Array(6).fill("reset-private-profile"));
   assert.equal(run.suite.uniqueFixtures, 12);
 });
 
@@ -124,8 +128,8 @@ test("a failed multi-turn start skips dependent turns and keeps planned coverage
     if (input.messages.at(-1).content === "/look") return { content: "", finish_reason: "length" };
     return { content: "A response." };
   } } }, run);
-  assert.ok(counter < 30);
-  assert.equal(run.aggregate.plannedTests, 30);
+  assert.ok(counter < 32);
+  assert.equal(run.aggregate.plannedTests, 32);
   assert.ok(run.aggregate.unattemptedTests > 0);
   assert.equal(run.aggregate.families.date_simulator.behaviorCoverage.total, run.suite.coverage.families.date_simulator.behavior);
 });
@@ -141,10 +145,10 @@ test("calibration disagreements warn without blocking Date, roleplay or writing 
       ? { id: criterion.id, rating: 3, reason: "A mock quality judgment." }
       : { id: criterion.id, verdict: "pass", reason: "This mock always passes behavior." }) }) };
   } } }, run);
-  assert.equal(judgeCalls, 13);
+  assert.equal(judgeCalls, 17);
   assert.equal(run.judge.status, "complete");
   assert.equal(run.judge.calibration.status, "failed");
-  assert.equal(run.judge.calibration.passed, 2);
+  assert.equal(run.judge.calibration.passed, 3);
   assert.ok(run.judge.warnings.length);
   assert.equal(run.judge.items.length, 7);
   assert.equal(run.aggregate.families.roleplay.subjectiveScore, 75);
@@ -158,15 +162,15 @@ test("passing calibration permits grading and rejected judge output retains evid
     if (input.connection_id !== "judge") return { content: responseFor(input.messages) };
     const candidate = JSON.parse(input.messages.at(-1).content);
     const anchor = JUDGE_CALIBRATION.find((item) => `calibration.${item.id}` === candidate.id);
-    if (anchor) return { content: JSON.stringify({ criteria: [{ id: "requirement", verdict: anchor.expected, rating: null, evidenceSource: "response", evidence: candidate.response.slice(0, 10), reason: "Mock expected verdict." }] }) };
+    if (anchor) return { content: JSON.stringify({ criteria: [{ id: "requirement", ...(anchor.kind === "quality" ? { rating: anchor.expectedRatings[0] } : { verdict: anchor.expected }), evidenceSource: "response", evidence: candidate.response.slice(0, 10), reason: "Mock expected grade." }] }) };
     return { content: '{"criteria": [', reasoning: "budget used", finish_reason: "length", usage: { completion_tokens: 3000 } };
   } } }, run);
   assert.equal(run.judge.calibration.status, "passed");
   assert.equal(run.judge.status, "failed");
-  assert.equal(run.judge.attempts.length, 17);
+  assert.equal(run.judge.attempts.length, 18);
   assert.equal(run.judge.attempts[0].response.reasoning, "budget used");
   assert.equal(run.judge.attempts[0].completion.status, "truncated");
-  assert.equal(run.usage.outputTokens, 51000);
+  assert.equal(run.usage.outputTokens, 54000);
   assert.equal(run.aggregate.families.writing.subjectiveScore, null);
 });
 
@@ -282,10 +286,12 @@ test("grades all fixtures with complete context, independent settings, and valid
           assert.ok(candidate.conversation.length > 0);
           assert.equal(candidate.model, undefined);
           assert.equal(candidate.reasoning, undefined);
+          assert.ok(candidate.criteria.length <= 6);
+          assert.equal(new Set(candidate.criteria.map((criterion) => criterion.kind)).size, 1);
           return {
             content: JSON.stringify({
               criteria: candidate.criteria.map((criterion) => ({
-                id: criterion.id, verdict: "pass", rating: criterion.kind === "quality" ? 3 : null,
+                id: criterion.id, ...(criterion.kind === "quality" ? { rating: 3 } : { verdict: "pass" }),
                 evidenceSource: "response", evidence: candidate.response.slice(0, 10), reason: "Mock rubric result.",
               })),
             }),
@@ -313,7 +319,7 @@ test("grades all fixtures with complete context, independent settings, and valid
   const finished = await executeRun(spindleApi, run);
   assert.equal(finished.status, "complete");
   assert.equal(targetCalls, 7);
-  assert.equal(judgeCalls, 7);
+  assert.equal(judgeCalls, 9);
   assert.equal(finished.judge.status, "complete");
   assert.equal(finished.judge.items.length, 7);
   assert.equal(finished.aggregate.families.roleplay.subjectiveScore, 75);
@@ -348,6 +354,7 @@ test("saved target responses can be regraded, retaining partial grades and retry
   } } }, source, { connectionId: "judge", provider: "custom", model: "local-judge", calibrate: false });
   assert.equal(targetCalls, 7);
   assert.notEqual(graded.id, source.id);
+  assert.equal(graded.schemaVersion, 3);
   assert.equal(graded.sourceRunId, source.id);
   assert.equal(graded.mode, "regrade");
   assert.equal(graded.judge.status, "complete");
@@ -356,7 +363,26 @@ test("saved target responses can be regraded, retaining partial grades and retry
   assert.equal(graded.aggregate.families.date_simulator.behaviorScore, 100);
   assert.equal(graded.usage.totalTokens, requested.length * 10);
   assert.ok(graded.judge.attempts.some((attempt) => attempt.retry));
-  assert.ok(graded.judge.attempts.filter((attempt) => attempt.retry).every((attempt) => attempt.criterionIds.length <= 4));
+  assert.ok(graded.judge.attempts.filter((attempt) => attempt.retry).every((attempt) => attempt.criterionIds.length <= 6));
   assert.deepEqual(source, before);
   assert.deepEqual(graded.results, source.results);
+});
+
+test("only a different regrade model can confirm a single semantic critical failure", async () => {
+  const criterion = { id: "autonomy", label: "Autonomy", instruction: "Do not dictate the user-controlled character's actions.", kind: "behavior", gates: ["user_agency"], severity: "critical" };
+  const result = { resultId: "agency.r1", testId: "agency", title: "Agency", family: "date_simulator", repetition: 1, turn: 1,
+    gates: ["user_agency"], promptRef: "agency", runtime: { status: "success" }, completion: { status: "complete" }, response: { content: "You agree." }, score: { score: null, assertions: [] }, criteria: [criterion] };
+  const source = {
+    schemaVersion: 3, id: "source", status: "complete", target: normalizeModelTarget({ connectionId: "target", provider: "custom", model: "target" }),
+    suite: { id: "quick", name: "Quick", repetitions: 1, targetCalls: 1, coverage: { targetCalls: 1, families: { date_simulator: { behavior: 1, quality: 0 }, roleplay: { behavior: 0, quality: 0 }, writing: { behavior: 0, quality: 0 } } } },
+    snapshot: {}, prompts: { agency: [{ role: "user", content: "Continue without deciding my action." }] }, results: [result],
+    judge: { enabled: true, model: "judge-a", rubricVersion: "old", items: [{ id: result.resultId, criteria: [{ ...criterion, verdict: "fail", reason: "It dictates the user." }] }] },
+    aggregate: {}, usage: {}, errors: [],
+  };
+  const spindleApi = { generate: { raw: async () => ({ content: JSON.stringify({ criteria: [{ id: "autonomy", verdict: "fail", reason: "It dictates the user." }] }) }) } };
+  const same = await regradeRun(spindleApi, source, { enabled: true, calibrate: false, connectionId: "judge", provider: "custom", model: "judge-a" });
+  assert.equal(same.aggregate.compatibility.code, "critical_concern");
+  const independent = await regradeRun(spindleApi, source, { enabled: true, calibrate: false, connectionId: "judge", provider: "custom", model: "judge-b" });
+  assert.equal(independent.aggregate.compatibility.code, "not_ready_confirmed_critical");
+  assert.equal(independent.judge.confirmationSource.model, "judge-a");
 });

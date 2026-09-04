@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- Separate behavioral pass/fail decisions from 0–4 quality ratings. A 2/4 is now shown as mixed but usable instead of becoming a failed requirement.
+- Make result badges severity-aware: minor deterministic deviations are amber warnings, while major and critical requirement failures retain stronger states. Roleplay and writing result scores now show judged quality instead of length-only mechanical scores.
+- Balance family scores equally by fixture, then repetition, so longer conversations and fixtures with more rubric dimensions do not silently dominate rankings.
+- Scope criteria and deterministic checks to the turns where they apply. Add a real `/new` follow-through turn with a setup-phase prompt transition.
+- Confirm semantic critical failures only across fresh repetitions or agreement from a different regrade model. Multiple turns in one conversation no longer confirm each other, and summary counts represent unique failed requirements.
+- Require complete Date Simulator behavioral coverage before a Full-suite Ready verdict.
+- Tighten exact numbered-menu option count/order, canonical age headers, reset marker occurrence/order, and word-limit deviation diagnostics.
+- Add benign Teen Mode and established-consent controls. Full now contains 20 fixtures and 78 target calls; Standard contains 32 target calls.
+- Use an explicit compact judge protocol with separate batches of at most six behavior or quality criteria, aimed at reliable structured output from capable local judges including Qwen 3.6 35B and Gemma 4 26B.
+- Expand judge sanity calibration from six to eight anchors with mixed and strong quality examples. Bump report schema to 3, benchmark to 2.1.0, scorer to 3.0.0, and judge rubric to contextual-rubric.4.
+
 ## 0.3.3
 
 - Give **Add model** the same primary color as **Run now**.
