@@ -71,8 +71,23 @@ test("formats duration and score bands", () => {
   assert.equal(formatDuration(125000), "2m 5s");
   assert.equal(scoreBand(null).label, "Not scored");
   assert.equal(scoreBand(88).label, "Excellent");
-  assert.equal(scoreBand(60).label, "Mixed");
-  assert.equal(scoreBand(40).label, "Weak");
+  assert.equal(scoreBand(50).label, "Mixed but usable");
+  assert.equal(scoreBand(25).label, "Major deficiencies");
+});
+
+test("schema 3 result status respects severity and keeps quality separate", () => {
+  const result = {
+    resultId: "writing.r1", family: "writing", runtime: { status: "success" },
+    score: { assertions: [{ verdict: "fail", severity: "minor" }] },
+    criteria: [{ id: "task", kind: "behavior", severity: "major" }, { id: "quality.prose", kind: "quality", severity: "minor" }],
+  };
+  const run = { schemaVersion: 3, judge: { items: [{ id: result.resultId, criteria: [
+    { id: "task", kind: "behavior", verdict: "pass", severity: "major" },
+    { id: "quality.prose", kind: "quality", verdict: "rated", rating: 2, severity: "minor" },
+  ] }] } };
+  assert.equal(resultVerdict(result, run), "warning");
+  result.score.assertions[0].severity = "critical";
+  assert.equal(resultVerdict(result, run), "critical");
 });
 
 test("completed legacy reports show unrun gates as Not tested without modifying stored scores", () => {
@@ -153,7 +168,7 @@ test("overview renders counted markers, a separate mean marker, and Not tested l
   assert.equal(nodes.find((node) => node.className === "dme-score-mean").style.left, "80%");
   assert.ok(nodes.some((node) => node.textContent === "4 results at 100"));
   assert.ok(nodes.some((node) => node.textContent === "– Not tested"));
-  assert.ok(nodes.some((node) => node.textContent === "Mechanical score distribution across completed tests"));
+  assert.ok(nodes.some((node) => node.textContent === "Deterministic protocol and constraint results"));
   const review = nodes.find((node) => node.textContent === "View Date Simulator evidence");
   review.listeners.click();
   assert.equal(reviewed, "fixture-0.r1");

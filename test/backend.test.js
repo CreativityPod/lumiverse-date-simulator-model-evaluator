@@ -73,7 +73,7 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   await frontendHandler({ type: "evaluator_bootstrap_request" }, "user-1");
   const bootstrap = messages.find((payload) => payload.type === "evaluator_bootstrap");
   assert.equal(bootstrap.connections[0].id, "conn-1");
-  assert.deepEqual(Array.from(bootstrap.suites, (suite) => suite.targetCalls), [7, 30, 69]);
+  assert.deepEqual(Array.from(bootstrap.suites, (suite) => suite.targetCalls), [7, 32, 78]);
   await frontendHandler({ type: "evaluator_get_run", id: "missing-run" }, "user-1");
   assert.ok(messages.some((payload) => payload.type === "evaluator_run_detail_error" && payload.id === "missing-run"));
 
@@ -105,7 +105,7 @@ test("built backend boots and completes a headless queue without chat APIs", asy
   assert.equal(regraded.runs[0].aggregate.families.roleplay.subjectiveScore, 75);
   assert.equal(regraded.runs[0].aggregate.families.writing.subjectiveScore, 75);
   assert.equal(rawCalls.filter((call) => call.model === "override-model").length, 7);
-  assert.equal(rawCalls.filter((call) => call.model === "judge-model").length, 7);
+  assert.equal(rawCalls.filter((call) => call.model === "judge-model").length, 9);
   assert.deepEqual(storage.get(`runs/${completedRunId}.json`), originalReport);
   await frontendHandler({ type: "evaluator_delete_run", id: regraded.runs[0].id }, "user-1");
   await frontendHandler({ type: "evaluator_delete_run", id: completedRunId }, "user-1");

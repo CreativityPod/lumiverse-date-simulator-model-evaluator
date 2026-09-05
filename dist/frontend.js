@@ -118,10 +118,11 @@ export function coveragePresentation(run) {
 export function scoreBand(value) {
   if (value == null || value === "" || !Number.isFinite(Number(value))) return { label: "Not scored", state: "inconclusive" };
   const score = Number(value);
-  if (score >= 85) return { label: "Excellent", state: "pass" };
-  if (score >= 70) return { label: "Strong", state: "pass" };
-  if (score >= 55) return { label: "Mixed", state: "inconclusive" };
-  return { label: "Weak", state: "fail" };
+  if (score >= 88) return { label: "Excellent", state: "pass" };
+  if (score >= 63) return { label: "Strong", state: "pass" };
+  if (score >= 38) return { label: "Mixed but usable", state: "inconclusive" };
+  if (score >= 13) return { label: "Major deficiencies", state: "fail" };
+  return { label: "Unusable", state: "fail" };
 }
 
 export function formatDuration(milliseconds) {
@@ -176,9 +177,20 @@ export function resultVerdict(result, run) {
   if (!(run?.schemaVersion >= 2)) return result.score?.passed == null ? "inconclusive" : result.score.passed ? "pass" : "fail";
   const judged = run.judge?.items?.find((item) => item.id === result.resultId)?.criteria ?? [];
   const expected = result.criteria ?? [];
-  const findings = [...(result.score?.assertions ?? []), ...judged];
-  if (findings.some((item) => item.verdict === "fail")) return "fail";
-  if (judged.length !== expected.length || !findings.length || findings.some((item) => item.verdict !== "pass")) return "inconclusive";
+  if (!(run?.schemaVersion >= 3)) {
+    const findings = [...(result.score?.assertions ?? []), ...judged];
+    if (findings.some((item) => item.verdict === "fail")) return "fail";
+    if (judged.length !== expected.length || !findings.length || findings.some((item) => item.verdict !== "pass")) return "inconclusive";
+    return "pass";
+  }
+  const expectedBehavior = expected.filter((item) => item.kind !== "quality");
+  const judgedBehavior = judged.filter((item) => item.kind !== "quality");
+  const findings = [...(result.score?.assertions ?? []), ...judgedBehavior];
+  const failed = findings.filter((item) => item.verdict === "fail");
+  if (failed.some((item) => item.severity === "critical")) return "critical";
+  if (failed.some((item) => item.severity !== "minor")) return "major";
+  if (judgedBehavior.length !== expectedBehavior.length || !findings.length || findings.some((item) => !["pass", "fail"].includes(item.verdict))) return "inconclusive";
+  if (failed.length) return "warning";
   return "pass";
 }
 
@@ -280,8 +292,8 @@ function scoreDistributionStrip(run, family, label) {
 }
 
 function verdictBadge(verdict, label = "") {
-  const icons = { pass: "✓", fail: "!", inconclusive: "?", not_applicable: "–", not_tested: "–" };
-  const names = { not_tested: "Not tested", not_applicable: "Not applicable" };
+  const icons = { pass: "✓", fail: "!", critical: "!", major: "!", warning: "!", inconclusive: "?", not_applicable: "–", not_tested: "–" };
+  const names = { critical: "Critical failure", major: "Major issue", warning: "Minor warning", not_tested: "Not tested", not_applicable: "Not applicable" };
   return element("span", `dme-verdict dme-${verdict}`, `${icons[verdict] ?? "?"} ${label || names[verdict] || verdict}`);
 }
 
@@ -368,7 +380,7 @@ function compatibilityDetail(aggregate) {
   if (code === "tested_pass_limited") return `Every tested readiness gate passed; ${coverage?.notTested ?? "some"} gate${coverage?.notTested === 1 ? " was" : "s were"} not tested by this suite.`;
   if (code === "compatible_with_issues") return `${aggregate?.compatibility?.failureCount ?? "One or more"} noncritical requirement failure${aggregate?.compatibility?.failureCount === 1 ? "" : "s"} found; inspect the findings below.`;
   if (code === "critical_concern") return "A semantic judge flagged a critical requirement once. Review the rationale and evidence before treating it as a confirmed incompatibility.";
-  if (code === "not_ready_confirmed_critical") return "A critical failure was confirmed by a deterministic check, a repeated result, or a regrade.";
+  if (code === "not_ready_confirmed_critical") return "A critical failure was confirmed by an exact deterministic check, independent fresh repetitions, or agreement from a different regrade model.";
   if (["not_ready_numbered_questions", "not_ready_private_profile", "not_ready_critical"].includes(code)) return "Legacy report verdict; inspect its Date Simulator evidence for the triggering failure.";
   return "The available execution or grading evidence is insufficient for a compatibility verdict.";
 }
@@ -429,7 +441,9 @@ export function overviewReport(run, callbacks = {}) {
     const confirmations = new Map((aggregate.criticalFindings ?? []).map((item) => [`${item.resultId}::${item.id}`, item.confirmation]));
     for (const finding of findings) {
       const confirmation = confirmations.get(`${finding.resultId}::${finding.id}`);
-      const state = finding.severity === "critical" && confirmation !== "review_required" ? "fail" : "inconclusive";
+      const state = finding.severity === "critical"
+        ? confirmation !== "review_required" ? "critical" : "inconclusive"
+        : finding.severity === "minor" ? "warning" : "major";
       const label = finding.severity === "critical"
         ? confirmation === "review_required" ? "Critical concern · review required" : "Confirmed critical failure"
         : `${finding.severity || "Noncritical"} issue`;
@@ -457,12 +471,11 @@ export function overviewReport(run, callbacks = {}) {
     createBar("Creative writing", scoreValue(aggregate.families?.writing, run), aggregate.families?.writing?.subjectiveScore != null ? "Independent rubric" : "Quality not assessed"),
   );
   const distribution = element("section", "dme-report-section");
-  distribution.appendChild(element("h3", "", "Mechanical score distribution across completed tests"));
-  distribution.appendChild(element("p", "dme-hint", "These are protocol and length checks, not semantic quality. Each result is one completed test attempt, including repetitions. Numbered circles count results at each score; the diamond marks the mean (average). Median is the middle score; range is lowest–highest. This shows variation across tests, not repeat-run reliability."));
+  distribution.appendChild(element("h3", "", "Deterministic protocol and constraint results"));
+  distribution.appendChild(element("p", "dme-hint", "These measurements cover exact Date Simulator protocol and requested writing length. They do not measure roleplay or prose quality. Numbered circles count completed attempts; the diamond marks the mean."));
   distribution.append(
-    scoreDistributionStrip(run, "date_simulator", "Date Simulator objective"),
-    scoreDistributionStrip(run, "roleplay", "Roleplay objective"),
-    scoreDistributionStrip(run, "writing", "Writing objective"),
+    scoreDistributionStrip(run, "date_simulator", "Date Simulator protocol"),
+    scoreDistributionStrip(run, "writing", "Writing length compliance"),
   );
   root.append(hero, scoreGrid, gates);
   if (findingSection) root.appendChild(findingSection);
@@ -488,10 +501,17 @@ export function evidenceReport(run, family, focusResultId = "") {
     if (focusResultId && result.resultId === focusResultId) details.open = true;
     const summary = element("summary", "dme-result-summary");
     const verdict = resultVerdict(result, run);
+    const judgeItem = run.judge?.items?.find((item) => item.id === result.resultId);
+    const scoreLabel = run.schemaVersion >= 3
+      ? result.family === "date_simulator"
+        ? [Number.isFinite(result.score?.score) ? `${result.score.score} protocol` : "", Number.isFinite(judgeItem?.behaviorScore) ? `${judgeItem.behaviorScore} behavior` : ""].filter(Boolean).join(" · ") || "—"
+        : Number.isFinite(judgeItem?.score) ? `${judgeItem.score} quality` : "—"
+      : result.score?.score == null ? "—" : `${result.score.score}`;
+    const resultLabel = { pass: "Requirements passed", critical: "Critical failure", major: "Major issue", warning: "Minor warning", inconclusive: "Incomplete assessment" }[verdict];
     summary.append(
-      verdictBadge(verdict),
+      verdictBadge(verdict, resultLabel),
       element("span", "dme-result-title", `${result.testId} · ${result.title} · repetition ${result.repetition ?? 1}${result.turn ? ` · turn ${result.turn}` : ""}`),
-      element("span", "dme-result-score", result.score?.score == null ? "—" : `${result.score.score}`),
+      element("span", "dme-result-score", scoreLabel),
     );
     const body = element("div", "dme-result-body");
     if (result.runtime?.status !== "success") {
@@ -500,25 +520,36 @@ export function evidenceReport(run, family, focusResultId = "") {
     for (const item of result.score?.assertions ?? []) {
       const finding = element("article", "dme-finding");
       const heading = element("div", "dme-finding-head");
-      heading.append(verdictBadge(item.verdict), element("strong", "", item.label), element("span", "dme-severity", item.severity));
+      const itemState = item.verdict === "fail" && run.schemaVersion >= 3
+        ? item.severity === "critical" ? "critical" : item.severity === "minor" ? "warning" : "major"
+        : item.verdict;
+      heading.append(verdictBadge(itemState), element("strong", "", item.label), element("span", "dme-severity", item.severity));
       finding.append(heading, element("p", "", item.detail || `${item.source} check`));
       if (item.evidence) finding.appendChild(element("pre", "dme-evidence", item.evidence));
       body.appendChild(finding);
     }
-    const judgeItem = run.judge?.items?.find((item) => item.id === result.resultId);
     if (run.schemaVersion >= 2) {
       for (const criterion of result.criteria ?? []) {
         const item = judgeItem?.criteria?.find((entry) => entry.id === criterion.id);
         const finding = element("article", "dme-finding dme-judge-finding");
         const heading = element("div", "dme-finding-head");
+        const quality = criterion.kind === "quality";
+        const qualityBand = scoreBand(item?.rating == null ? null : item.rating * 25);
+        const semanticState = quality ? qualityBand.state
+          : item?.verdict === "fail" && run.schemaVersion >= 3
+            ? criterion.severity === "critical" ? "critical" : criterion.severity === "minor" ? "warning" : "major"
+            : item?.verdict === "uncertain" ? "inconclusive" : item?.verdict ?? "inconclusive";
+        const semanticLabel = quality
+          ? item?.rating == null ? "Not assessed" : `${item.rating}/4 · ${qualityBand.label}`
+          : item?.verdict ?? "Not assessed";
         heading.append(
-          verdictBadge(item?.verdict === "uncertain" ? "inconclusive" : item?.verdict ?? "inconclusive", item?.verdict ?? "Not assessed"),
+          verdictBadge(semanticState, semanticLabel),
           element("strong", "", criterion.label),
-          element("span", "dme-severity", `${criterion.severity} · semantic`),
+          element("span", "dme-severity", `${quality ? "quality" : criterion.severity} · semantic`),
         );
         finding.append(heading, element("p", "dme-hint", criterion.instruction));
         if (item) {
-          finding.appendChild(element("p", "", `${item.rating == null ? "" : `${item.rating}/4 · `}${item.reason}`));
+          finding.appendChild(element("p", "", item.reason));
           finding.appendChild(element("pre", "dme-evidence", item.evidence ? `${item.evidenceSource === "unverified" ? "Unverified quote" : item.evidenceSource}: ${item.evidence}` : item.evidenceSource === "absence" ? "Absence assessed across response" : "Rationale-based judgment; no quote supplied"));
           if (item.verdict === "fail" && criterion.severity === "critical") {
             const aggregateFinding = run.aggregate?.criticalFindings?.find((entry) => entry.resultId === result.resultId && entry.id === criterion.id);
@@ -704,6 +735,7 @@ export function setup(ctx) {
   let pendingDeleteId = "";
   let clearingReports = false;
   let countdownInterval = null;
+  let addFeedbackTimeout = null;
 
   const removeStyle = ctx.dom.addStyle(`
     .dme-panel { display:flex; flex-direction:column; gap:14px; padding:14px; color:var(--lumiverse-text); }
@@ -721,6 +753,9 @@ export function setup(ctx) {
     .dme-control-slot { min-height:36px; min-width:0; }
     .dme-actions { display:flex; flex-wrap:wrap; gap:8px; }
     .dme-target-utilities { display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:8px; min-width:0; }
+    .dme-add-button { min-width:92px; }
+    .dme-add-feedback { max-width:260px; color:var(--lumiverse-success,#70b987); font-size:.76rem; line-height:1.35; }
+    .dme-add-feedback[hidden] { display:none; }
     .dme-button { appearance:none; border:1px solid var(--lumiverse-border); border-radius:8px; padding:8px 11px; background:color-mix(in srgb,var(--lumiverse-bg) 88%,var(--lumiverse-text) 5%); color:var(--lumiverse-text); cursor:pointer; font-weight:600; }
     .dme-button:hover { border-color:var(--lumiverse-accent,#8c7cf0); }
     .dme-button:disabled { opacity:.5; cursor:not-allowed; }
@@ -729,6 +764,8 @@ export function setup(ctx) {
     .dme-inline-check { display:flex; gap:8px; align-items:flex-start; font-size:.86rem; }
     .dme-queue,.dme-history { display:flex; flex-direction:column; gap:8px; }
     .dme-queue-row,.dme-history-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding:10px; border:1px solid var(--lumiverse-border); border-radius:9px; }
+    .dme-queue-row.dme-just-added { animation:dme-model-added 1.8s ease-out; }
+    @keyframes dme-model-added { 0% { border-color:var(--lumiverse-accent,#725fe5); background:color-mix(in srgb,var(--lumiverse-accent,#725fe5) 20%,transparent); box-shadow:0 0 0 3px color-mix(in srgb,var(--lumiverse-accent,#725fe5) 22%,transparent); } 100% { border-color:var(--lumiverse-border); background:transparent; box-shadow:none; } }
     .dme-model-id { font-weight:650; overflow-wrap:anywhere; }
     .dme-row-meta { color:var(--lumiverse-text-muted); font-size:.76rem; }
     .dme-icon-button { padding:5px 8px; }
@@ -768,7 +805,7 @@ export function setup(ctx) {
     .dme-gate-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
     .dme-gate { display:flex; align-items:center; gap:8px; }
     .dme-verdict { display:inline-flex; align-items:center; gap:3px; font-size:.77rem; font-weight:750; white-space:nowrap; }
-    .dme-pass { color:var(--lumiverse-success,#70b987); }.dme-fail { color:var(--lumiverse-danger,#e57979); }.dme-inconclusive { color:var(--lumiverse-warning,#d5a85f); }
+    .dme-pass { color:var(--lumiverse-success,#70b987); }.dme-fail,.dme-critical { color:var(--lumiverse-danger,#e57979); }.dme-major,.dme-warning,.dme-inconclusive { color:var(--lumiverse-warning,#d5a85f); }
     .dme-not_tested,.dme-not_applicable { color:var(--lumiverse-text-muted); }
     .dme-bar-row { margin:9px 0; }.dme-bar-head { display:flex; justify-content:space-between; gap:10px; font-size:.83rem; text-transform:capitalize; }
     .dme-bar-track { height:9px; margin-top:4px; background:color-mix(in srgb,var(--lumiverse-text) 10%,transparent); border-radius:999px; overflow:hidden; }
@@ -795,7 +832,7 @@ export function setup(ctx) {
     .dme-compare-table { display:flex; flex-direction:column; border:1px solid var(--lumiverse-border); border-radius:10px; overflow:hidden; }.dme-compare-row { display:grid; grid-template-columns:minmax(150px,1.5fr) minmax(150px,1.4fr) repeat(3,.55fr) .7fr .4fr; gap:8px; align-items:center; padding:10px; border-bottom:1px solid var(--lumiverse-border); }.dme-compare-row:last-child { border-bottom:0; }.dme-compare-head { color:var(--lumiverse-text-muted); font-size:.75rem; font-weight:700; }
     .dme-comparison-warning { padding:10px; color:var(--lumiverse-warning,#d5a85f); border:1px solid currentColor; border-radius:8px; }
     @media(max-width:700px){.dme-grid,.dme-score-grid,.dme-gate-grid,.dme-status-grid{grid-template-columns:1fr}.dme-compare-head{display:none}.dme-compare-row{grid-template-columns:1fr;gap:4px}.dme-report-body{padding:10px}.dme-env-grid{grid-template-columns:1fr}.dme-env-grid dt{margin-top:6px}}
-    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}}
+    @media(prefers-reduced-motion:reduce){.dme-progress-fill{transition:none}.dme-spinner{animation:none}.dme-queue-row.dme-just-added{animation:none;border-color:var(--lumiverse-accent,#725fe5)}}
   `);
   cleanups.push(removeStyle);
 
@@ -828,8 +865,8 @@ export function setup(ctx) {
   const targetConnection = select([], "");
   const suiteSelect = select([
     { value: "quick", label: "Quick · 7 calls" },
-    { value: "standard", label: "Standard · 30 calls" },
-    { value: "full", label: "Full · 69 calls" },
+    { value: "standard", label: "Standard · 32 calls" },
+    { value: "full", label: "Full · 78 calls" },
   ], "quick");
   const temperatureInput = input("number", "", { min: 0, max: 2, step: 0.1 });
   const maxTokensInput = input("number", 16384, { min: 400, max: 262144, step: 1 });
@@ -852,9 +889,14 @@ export function setup(ctx) {
   const modeField = field("Comparison mode", "Capability: allow enough headroom. Fixed budget: use identical limits across targets. Neither mode retries automatically.");
   const modeSelect = select([{ value: "capability", label: "Capability" }, { value: "fixed_budget", label: "Fixed output budget" }], "capability");
   modeField.slot.appendChild(modeSelect);
-  const addButton = button("Add model", "dme-primary");
+  const addButton = button("Add model", "dme-primary dme-add-button");
+  const addFeedback = element("div", "dme-add-feedback");
+  addFeedback.hidden = true;
+  addFeedback.setAttribute("role", "status");
+  addFeedback.setAttribute("aria-live", "polite");
+  addFeedback.setAttribute("aria-atomic", "true");
   const targetUtilities = element("div", "dme-target-utilities");
-  targetUtilities.append(addButton, refreshButton);
+  targetUtilities.append(addButton, refreshButton, addFeedback);
   targetGrid.append(
     connectionField.wrapper, modelField.wrapper,
     suiteField.wrapper, temperatureField.wrapper,
@@ -874,11 +916,11 @@ export function setup(ctx) {
   const judgeEnabledLabel = element("label", "dme-inline-check");
   const judgeEnabled = input("checkbox", "");
   judgeEnabled.checked = false;
-  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Grade contextual requirements for every test, plus roleplay and writing quality. Without a judge, semantic capability is not assessed. Grades each completed target response; missing or malformed grades get one retry in smaller batches."));
+  judgeEnabledLabel.append(judgeEnabled, element("span", "", "Grade contextual requirements for every test, plus roleplay and writing quality. Without a judge, semantic capability is not assessed. Behavior and quality use separate compact batches of at most six criteria, suitable for capable local judges; missing or malformed grades get one bounded retry."));
   const calibrationLabel = element("label", "dme-inline-check");
   const calibrationEnabled = input("checkbox", "");
   calibrationEnabled.checked = true;
-  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with six synthetic examples after grading. Adds six diagnostic calls after grading. Disagreements mark scores provisional; they never block grading."));
+  calibrationLabel.append(calibrationEnabled, element("span", "", "Check judge with eight synthetic examples after grading. Adds eight diagnostic calls after grading. Disagreements mark scores provisional; they never block grading."));
   const judgeGrid = element("div", "dme-grid");
   const judgeConnectionField = field("Judge connection");
   const judgeModelField = field("Judge model");
@@ -1065,14 +1107,19 @@ export function setup(ctx) {
     remountJudgeModel(savedConfig?.judge?.model || selectedConnection(judgeConnection)?.model || "");
   }
 
-  function renderQueue() {
+  function renderQueue(highlightIndex = -1) {
     queueList.replaceChildren();
     queueCount.textContent = `${queue.length} model${queue.length === 1 ? "" : "s"}`;
     runSelectedButton.disabled = running || queue.length === 0;
     clearButton.disabled = running || queue.length === 0;
     if (!queue.length) queueList.appendChild(element("div", "dme-empty", "No queued models. “Run now” does not require a queue."));
+    let highlightedRow = null;
     queue.forEach((item, index) => {
       const row = element("div", "dme-queue-row");
+      if (index === highlightIndex) {
+        row.className += " dme-just-added";
+        highlightedRow = row;
+      }
       const copy = element("div", "");
       copy.append(element("div", "dme-model-id", item.model), element("div", "dme-row-meta", `${item.connectionName} · ${item.suite} · T ${item.temperature} · ${item.reasoning}`));
       const remove = button("Remove", "dme-icon-button");
@@ -1085,6 +1132,7 @@ export function setup(ctx) {
       row.append(copy, remove);
       queueList.appendChild(row);
     });
+    return highlightedRow;
   }
 
   function renderHistory() {
@@ -1245,8 +1293,23 @@ export function setup(ctx) {
     const target = currentTarget();
     if (!target.connectionId || !target.model) return setStatus("Choose a connection and model before adding it.", 0, true);
     queue.push(target);
-    renderQueue();
+    const addedRow = renderQueue(queue.length - 1);
     saveConfig();
+    targetSection.open = true;
+    addButton.textContent = "Added ✓";
+    addFeedback.textContent = `${target.model} added to the comparison queue. Choose a connection and model to add another.`;
+    addFeedback.hidden = false;
+    const reduceMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    addedRow?.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+    targetConnection.focus?.({ preventScroll: true });
+    if (addFeedbackTimeout !== null) clearTimeout(addFeedbackTimeout);
+    addFeedbackTimeout = setTimeout(() => {
+      addButton.textContent = "Add model";
+      addFeedback.textContent = "";
+      addFeedback.hidden = true;
+      if (addedRow) addedRow.className = addedRow.className.replace(/\s*dme-just-added\b/, "");
+      addFeedbackTimeout = null;
+    }, 3000);
   });
   runNowButton.addEventListener("click", () => launch([currentTarget()]));
   runSelectedButton.addEventListener("click", () => launch(queue));
@@ -1369,6 +1432,7 @@ export function setup(ctx) {
 
   return () => {
     stopCountdown();
+    if (addFeedbackTimeout !== null) clearTimeout(addFeedbackTimeout);
     try { targetModelHandle?.destroy(); } catch { /* best effort */ }
     try { judgeModelHandle?.destroy(); } catch { /* best effort */ }
     for (const handle of mounted.reverse()) {

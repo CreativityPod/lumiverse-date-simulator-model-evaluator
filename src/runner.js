@@ -1,11 +1,20 @@
-import { compileBenchmark, snapshotMetadata } from "./compiler.js";
+import { cardSystemPrompt, compileBenchmark, snapshotMetadata } from "./compiler.js";
 import { getSuite } from "./benchmarks.js";
 import { aggregateRun, scoreResponse } from "./scorers.js";
 import { BENCHMARK_VERSION, JUDGE_RUBRIC_VERSION } from "./rubrics.js";
 import { judgeMessages, parseJudgeJson, validateJudgeResult } from "./judging.js";
 import { CALIBRATION_VERSION, JUDGE_CALIBRATION, calibrationResult } from "./calibration.js";
 
-const RUN_SCHEMA_VERSION = 2;
+const RUN_SCHEMA_VERSION = 3;
+const JUDGE_BATCH_SIZE = 6;
+
+function appliesToTurn(item, turn) {
+  return !Array.isArray(item?.turns) || item.turns.includes(turn);
+}
+
+function itemsForTurn(items, turn) {
+  return (items ?? []).filter((item) => appliesToTurn(item, turn));
+}
 
 function boundedNumber(value, fallback, minimum, maximum) {
   const parsed = Number(value);
@@ -229,7 +238,9 @@ export function createRun(targetValue, judgeValue) {
         targetCalls: suite.estimatedTargetCalls,
         families: Object.fromEntries(["date_simulator", "roleplay", "writing"].map((family) => {
           const tests = suite.tests.filter((test) => test.family === family);
-          const count = (kind) => tests.reduce((sum, test) => sum + test.criteria.filter((criterion) => (criterion.kind === "quality") === (kind === "quality")).length * (1 + test.followUps.length) * suite.repetitions, 0);
+          const count = (kind) => tests.reduce((sum, test) => sum + Array.from({ length: 1 + test.followUps.length }, (_, index) => index + 1)
+            .reduce((turnTotal, turn) => turnTotal + itemsForTurn(test.criteria, turn)
+              .filter((criterion) => (criterion.kind === "quality") === (kind === "quality")).length, 0) * suite.repetitions, 0);
           return [family, { behavior: count("behavior"), quality: count("quality") }];
         })),
       },
@@ -310,7 +321,10 @@ async function checkJudgeCalibration(spindleApi, run, userId, signal, hooks) {
       attempt.completion = classifyCompletion(attempt.response);
       if (attempt.completion.status !== "complete") throw new Error(attempt.completion.detail);
       attempt.judgment = validateJudgeResult(parseJudgeJson(attempt.response.content), result, anchor.prompt);
-      attempt.agrees = attempt.judgment.criteria[0].verdict === anchor.expected;
+      const graded = attempt.judgment.criteria[0];
+      attempt.agrees = anchor.kind === "quality"
+        ? anchor.expectedRatings.includes(graded.rating)
+        : graded.verdict === anchor.expected;
       if (attempt.agrees) calibration.passed += 1;
     } catch (error) {
       attempt.error = String(error?.message ?? error);
@@ -327,15 +341,22 @@ async function checkJudgeCalibration(spindleApi, run, userId, signal, hooks) {
 
 async function gradeResult(spindleApi, run, result, userId, signal, hooks, index, total) {
   const collected = new Map();
-  const batches = [result.criteria];
+  const initialBatches = [];
+  for (const kind of ["behavior", "quality"]) {
+    const criteria = result.criteria.filter((criterion) => (criterion.kind === "quality" ? "quality" : "behavior") === kind);
+    for (let offset = 0; offset < criteria.length; offset += JUDGE_BATCH_SIZE) initialBatches.push(criteria.slice(offset, offset + JUDGE_BATCH_SIZE));
+  }
+  const batches = [...initialBatches];
+  const initialBatchCount = initialBatches.length;
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     if (signal?.aborted) throw abortError(signal.reason);
     const requested = { ...result, criteria: batches[batchIndex] };
     const messages = judgeMessages(requested, run.prompts[result.promptRef]);
     const input = requestInput(run.judge, messages, undefined, userId);
-    const attempt = { resultId: result.resultId, retry: batchIndex > 0, criterionIds: requested.criteria.map((item) => item.id), messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit", status: "pending" };
+    const retry = batchIndex >= initialBatchCount;
+    const attempt = { resultId: result.resultId, retry, criterionIds: requested.criteria.map((item) => item.id), messages, parameters: input.parameters, reasoning: input.reasoning ?? "inherit", status: "pending" };
     const started = Date.now();
-    hooks.progress?.({ phase: "judge", current: index + 1, total, label: `${batchIndex ? "Retry missing grades" : "Contextual grading"}: ${result.title}`, timeoutMs: run.judge.timeoutMs, requestStartedAt: started });
+    hooks.progress?.({ phase: "judge", current: index + 1, total, label: `${retry ? "Retry missing grades" : "Contextual grading"}: ${result.title}`, timeoutMs: run.judge.timeoutMs, requestStartedAt: started });
     run.judge.attempts.push(attempt);
     try {
       const raw = await generateRawWithTimeout(spindleApi, input, { signal, timeoutMs: run.judge.timeoutMs });
@@ -364,10 +385,10 @@ async function gradeResult(spindleApi, run, result, userId, signal, hooks, index
       run.aggregate = aggregateRun(run.results, run.judge, run.suite.coverage);
       await hooks.persist?.(run);
     }
-    if (batchIndex === 0 && attempt.response && ["complete", "truncated"].includes(attempt.completion?.status)) {
-      const missing = result.criteria.filter((criterion) => !collected.has(criterion.id));
+    if (batchIndex < initialBatchCount && attempt.response && ["complete", "truncated"].includes(attempt.completion?.status)) {
+      const missing = requested.criteria.filter((criterion) => !collected.has(criterion.id));
       // At most one retry per missing criterion; do not discard successful grades.
-      for (let offset = 0; offset < missing.length; offset += 4) batches.push(missing.slice(offset, offset + 4));
+      for (let offset = 0; offset < missing.length; offset += JUDGE_BATCH_SIZE) batches.push(missing.slice(offset, offset + JUDGE_BATCH_SIZE));
     }
   }
   const missing = result.criteria.filter((criterion) => !collected.has(criterion.id));
@@ -392,23 +413,26 @@ async function runJudge(spindleApi, run, userId, parentSignal, hooks) {
 }
 
 export async function regradeRun(spindleApi, source, judgeValue, options = {}) {
-  if (!(source?.schemaVersion >= 2) || !source.results?.length || !source.prompts) throw new Error("This report does not contain reusable version 2 target evidence.");
+  if (!(source?.schemaVersion >= 2) || !source.results?.length || !source.prompts) throw new Error("This report does not contain reusable version 2 or 3 target evidence.");
   const judge = normalizeJudge({ ...judgeValue, enabled: true });
   const errors = validateRunRequest(source.target, judge);
   if (errors.length) throw new Error(errors.join(" "));
   if (!source.results.some((result) => result.runtime?.status === "success" && source.prompts[result.promptRef] && result.criteria?.length)) {
     throw new Error("No completed target responses are available to grade. Incomplete target output requires a new target run.");
   }
-  const priorCriticalFailureKeys = [...new Set(source.results.flatMap((result) => {
+  const independentRegrade = Boolean(source.judge?.model && source.judge.model.toLowerCase() !== judge.model.toLowerCase());
+  const priorCriticalFailureKeys = independentRegrade ? [...new Set(source.results.flatMap((result) => {
     const grades = source.judge?.items?.find((item) => item.id === result.resultId)?.criteria ?? [];
     return (result.criteria ?? []).filter((criterion) => criterion.severity === "critical"
       && grades.some((grade) => grade.id === criterion.id && grade.verdict === "fail"))
       .map((criterion) => `${result.testId}::${criterion.id}`);
-  }))];
+  }))] : [];
   const run = {
-    ...JSON.parse(JSON.stringify(source)), id: runId(), sourceRunId: source.id, mode: "regrade",
+    ...JSON.parse(JSON.stringify(source)), schemaVersion: RUN_SCHEMA_VERSION, id: runId(), sourceRunId: source.id, mode: "regrade",
     reusedTargetCalls: source.results.length, status: "running", startedAt: new Date().toISOString(), completedAt: "", durationMs: 0,
-    judge: { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, priorCriticalFailureKeys, items: [], attempts: [], errors: [], warnings: [] },
+    judge: { ...judge, status: "pending", rubricVersion: JUDGE_RUBRIC_VERSION, priorCriticalFailureKeys,
+      confirmationSource: independentRegrade ? { model: source.judge.model, rubricVersion: source.judge.rubricVersion } : null,
+      items: [], attempts: [], errors: [], warnings: [] },
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, errors: [],
   };
   const started = Date.now();
@@ -449,14 +473,23 @@ export async function executeRun(spindleApi, run, options = {}) {
         for (let turn = 1; turn <= 1 + (test.followUps?.length ?? 0); turn += 1) {
           if (signal?.aborted) throw abortError(signal.reason);
           ordinal += 1;
-          if (turn > 1) messages.push({ role: "user", content: test.followUps[turn - 2] });
+          if (turn > 1) {
+            const turnContext = test.turnContexts?.[turn];
+            if (turnContext && test.promptKind === "date_simulator") {
+              messages[0] = { role: "system", content: cardSystemPrompt(turnContext) };
+            }
+            messages.push({ role: "user", content: test.followUps[turn - 2] });
+          }
           const promptRef = turn === 1 ? test.id : `${test.id}.r${repetition}.t${turn}`;
           run.prompts[promptRef] = messages.map((message) => ({ ...message }));
           const input = requestInput(run.target, messages, undefined, options.userId);
+          const criteria = itemsForTurn(test.criteria, turn);
+          const checks = itemsForTurn(test.checks, turn);
+          const gates = [...new Set([...criteria, ...checks].flatMap((item) => item.gates ?? []))];
           const result = {
             resultId: `${test.id}.r${repetition}${turn > 1 ? `.t${turn}` : ""}`, testId: test.id, title: test.title, turn,
-            family: test.family, gates: test.gates ?? [], repetition,
-            criteria: test.criteria ?? [], judgeDimensions: test.judgeDimensions ?? [],
+            family: test.family, gates, repetition,
+            criteria, judgeDimensions: criteria.filter((criterion) => criterion.kind === "quality").map((criterion) => criterion.id.replace(/^quality\./, "")),
             promptRef,
             request: { parameters: input.parameters, reasoning: input.reasoning ?? "inherit" },
             response: captureResponse(null), completion: { status: "error" }, score: null,
@@ -479,7 +512,7 @@ export async function executeRun(spindleApi, run, options = {}) {
             result.completion = classifyCompletion(result.response);
             const complete = result.completion.status === "complete";
             result.runtime = { status: complete ? "success" : "incomplete", latencyMs: Date.now() - requestStarted };
-            if (complete) result.score = scoreResponse(test, result.response.content);
+            if (complete) result.score = scoreResponse({ ...test, checks }, result.response.content);
           } catch (error) {
             result.runtime = { status: "error", latencyMs: Date.now() - requestStarted, error: String(error?.message ?? error) };
             run.errors.push(`${test.id} repetition ${repetition}: ${result.runtime.error}`);

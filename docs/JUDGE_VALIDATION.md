@@ -1,6 +1,8 @@
 # Validating a local or API judge
 
-The built-in six-example check is a sanity check, not proof that a model can judge nuanced fiction. It tests paraphrased autonomy, an unrelated negation masking enacted actions, an empty acknowledgment, reversed object relationships, a synonymous scene event, and instructions embedded in candidate text. The synthetic anchors are in `src/calibration.js`; their expected labels are never sent to the judge.
+The built-in eight-example check is a sanity check, not proof that a model can judge nuanced fiction. It tests paraphrased autonomy, an unrelated negation masking enacted actions, an empty acknowledgment, reversed object relationships, a synonymous scene event, instructions embedded in candidate text, mixed-but-usable quality, and strong quality. The synthetic anchors are in `src/calibration.js`; their expected labels are never sent to the judge.
+
+The production judge prompt deliberately uses short numbered rules, compact JSON, batches of at most six criteria, and separate behavioral and quality batches. This format is intended to remain practical for capable local judges in the Qwen 3.6 35B and Gemma 4 26B class as well as hosted API models. Reasoning can remain inherited, but disabling visible thinking at the local server can reduce truncation when the model supports that option.
 
 Run Quick with the intended judge settings. Inspect Environment → Judge calibration and errors if a sanity example fails. The check is advisory and runs after target grading; failed examples make the scores provisional. A truncated or malformed judge answer is a configuration issue rather than disagreement about the candidate. Increase output/context allowance or change supported reasoning settings as appropriate; do not treat rejected JSON as a low target score.
 

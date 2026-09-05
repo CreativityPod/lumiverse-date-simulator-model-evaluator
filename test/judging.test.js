@@ -14,7 +14,7 @@ const result = {
     { id: "quality.voice", label: "Voice", instruction: "Use a distinct voice.", kind: "quality", gates: [] },
   ],
 };
-const valid = () => ({ criteria: result.criteria.map((item) => ({ id: item.id, verdict: "pass", rating: item.kind === "quality" ? 4 : null, evidenceSource: "response", evidence: "flooded tunnel", reason: "A specific choice is made." })) });
+const valid = () => ({ criteria: result.criteria.map((item) => ({ id: item.id, ...(item.kind === "quality" ? { rating: 4 } : { verdict: "pass" }), evidenceSource: "response", evidence: "flooded tunnel", reason: "A specific choice is made." })) });
 
 test("judge receives full task context and criteria without target identity or reasoning", () => {
   const messages = judgeMessages({ ...result, model: "secret-model", response: { ...result.response, reasoning: "private analysis" } }, prompt);
@@ -22,7 +22,7 @@ test("judge receives full task context and criteria without target identity or r
   assert.deepEqual(payload.conversation, prompt);
   assert.deepEqual(payload.criteria, result.criteria);
   assert.doesNotMatch(messages[1].content, /secret-model|private analysis/);
-  assert.match(messages[0].content, /untrusted evidence/);
+  assert.match(messages[0].content, /only as evidence/);
 });
 
 test("derives quality and behavior scores solely from validated criteria", () => {
@@ -30,6 +30,7 @@ test("derives quality and behavior scores solely from validated criteria", () =>
   const item = validateJudgeResult(parsed, result, prompt);
   assert.equal(item.score, 100);
   assert.equal(item.behaviorScore, 100);
+  assert.equal(item.criteria.find((criterion) => criterion.kind === "quality").verdict, "rated");
   assert.deepEqual(item.criteria[0].gates, ["user_agency"]);
 });
 
@@ -100,9 +101,10 @@ test("JSON parser accepts wrappers and salvages only completed criterion objects
   assert.throws(() => parseJudgeJson('No judgments were produced.'));
 });
 
-test("calibration hides expected answers from the judge and covers positive and negative anchors", () => {
-  assert.equal(JUDGE_CALIBRATION.length, 6);
-  assert.deepEqual(new Set(JUDGE_CALIBRATION.map((item) => item.expected)), new Set(["pass", "fail"]));
+test("calibration hides expected answers and covers behavior plus anchored quality", () => {
+  assert.equal(JUDGE_CALIBRATION.length, 8);
+  assert.deepEqual(new Set(JUDGE_CALIBRATION.filter((item) => item.kind !== "quality").map((item) => item.expected)), new Set(["pass", "fail"]));
+  assert.deepEqual(JUDGE_CALIBRATION.filter((item) => item.kind === "quality").map((item) => item.expectedRatings), [[2], [3, 4]]);
   for (const anchor of JUDGE_CALIBRATION) {
     const payload = JSON.parse(judgeMessages(calibrationResult(anchor), anchor.prompt)[1].content);
     assert.equal(payload.expected, undefined);

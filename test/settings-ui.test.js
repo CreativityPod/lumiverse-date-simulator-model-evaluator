@@ -14,6 +14,8 @@ class FakeNode {
   setAttribute(key, value) { this.attributes[key] = value; }
   addEventListener(event, callback) { this.listeners[event] = callback; }
   click() { this.listeners.click?.(); }
+  focus(options) { this.focusOptions = options; }
+  scrollIntoView(options) { this.scrollOptions = options; }
 }
 const flatten = (node) => [node, ...node.children.flatMap(flatten)];
 
@@ -59,7 +61,8 @@ test("settings UI restores and launches local/API targets with independently con
   assert.equal(inside(refresh, targetDetails), true);
   assert.equal(inside(addModel, targetDetails), true);
   assert.equal(refresh.parent, addModel.parent);
-  assert.deepEqual(addModel.parent.children, [addModel, refresh]);
+  assert.deepEqual(addModel.parent.children.slice(0, 2), [addModel, refresh]);
+  assert.equal(addModel.parent.children[2].attributes["aria-live"], "polite");
   assert.match(addModel.className, /dme-primary/);
   assert.equal(inside(nodes.find((node) => node.textContent === "Run now"), targetDetails), false);
   nodes.find((node) => node.textContent === "Run now").click();
@@ -101,6 +104,52 @@ test("settings UI restores and launches local/API targets with independently con
   flatten(root).find((node) => node.textContent === "Run now").click();
   assert.equal(sent.filter((item) => item.type === "evaluator_run_queue").length, before);
   assert.ok(flatten(root).some((node) => node.textContent?.startsWith("Invalid generation settings")));
+  cleanup();
+});
+
+test("Add model confirms the queued row and guides the next addition", (context) => {
+  fakeDocument(context);
+  let receive;
+  let nextTimer = 0;
+  const timers = new Map();
+  context.mock.method(globalThis, "setTimeout", (callback) => { timers.set(++nextTimer, callback); return nextTimer; });
+  context.mock.method(globalThis, "clearTimeout", (id) => timers.delete(id));
+  const root = new FakeNode("div");
+  const cleanup = setup({
+    deferReady() {}, ready() {}, sendToBackend() {},
+    onBackendMessage: (callback) => { receive = callback; return () => {}; },
+    dom: { addStyle: () => () => {}, cleanup() {} },
+    ui: { registerDrawerTab: () => ({ root, onActivate: () => () => {}, destroy() {} }) },
+  });
+  receive({
+    type: "evaluator_bootstrap",
+    connections: [{ id: "local", name: "Local", provider: "custom", model: "gemma-4-26b" }],
+    history: [], suites: [{ id: "quick", name: "Quick", targetCalls: 7 }],
+  });
+
+  let nodes = flatten(root);
+  const addModel = nodes.find((node) => node.textContent === "Add model");
+  const targetDetails = nodes.find((node) => node.textContent === "Target model").parent.parent;
+  const targetConnection = nodes.find((node) => node.tag === "select");
+  addModel.click();
+
+  nodes = flatten(root);
+  const addedRow = nodes.find((node) => node.className?.includes("dme-just-added"));
+  const feedback = nodes.find((node) => node.className === "dme-add-feedback");
+  assert.equal(addModel.textContent, "Added ✓");
+  assert.equal(targetDetails.open, true);
+  assert.equal(feedback.hidden, false);
+  assert.match(feedback.textContent, /gemma-4-26b added to the comparison queue/);
+  assert.equal(feedback.attributes.role, "status");
+  assert.equal(feedback.attributes["aria-live"], "polite");
+  assert.equal(nodes.find((node) => node.textContent === "1 model").textContent, "1 model");
+  assert.deepEqual(addedRow.scrollOptions, { behavior: "smooth", block: "nearest" });
+  assert.deepEqual(targetConnection.focusOptions, { preventScroll: true });
+
+  timers.get(nextTimer)();
+  assert.equal(addModel.textContent, "Add model");
+  assert.equal(feedback.hidden, true);
+  assert.doesNotMatch(addedRow.className, /dme-just-added/);
   cleanup();
 });
 

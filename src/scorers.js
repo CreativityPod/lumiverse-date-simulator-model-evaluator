@@ -10,7 +10,7 @@ export const CASE_FIELDS = Object.freeze([
   "INITIAL STATE",
 ]);
 
-export const SCORING_VERSION = "2.1.0";
+export const SCORING_VERSION = "3.0.0";
 
 function excerpt(text, index = 0, length = 280) {
   const source = String(text ?? "");
@@ -45,7 +45,7 @@ export function parseNumberedOptions(text) {
   return options;
 }
 
-export function validateNumberedMenu(text, { minimum = 3, requiredLabels = [] } = {}) {
+export function validateNumberedMenu(text, { minimum = 3, maximum = Infinity, requiredLabels = [] } = {}) {
   const options = parseNumberedOptions(text);
   const numbers = options.map((option) => option.number);
   const unique = new Set(numbers);
@@ -54,7 +54,8 @@ export function validateNumberedMenu(text, { minimum = 3, requiredLabels = [] } 
   const normalizedLabels = options.map((option) => option.label.toLowerCase()).join("\n");
   const missingLabels = requiredLabels.filter((label) => !normalizedLabels.includes(label.toLowerCase()));
   return {
-    valid: options.length >= minimum && unique.size === options.length && sequential && missingLabels.length === 0,
+    valid: options.length >= minimum && options.length <= maximum && unique.size === options.length
+      && sequential && missingLabels.length === 0,
     options,
     duplicates: [...new Set(duplicates)],
     sequential,
@@ -119,7 +120,7 @@ function evaluateCheck(check, text, test) {
     const result = validateNumberedMenu(source, check);
     const detail = result.valid
       ? `${result.options.length} unique sequential numbered choices found.`
-      : `${result.options.length} choices; missing labels: ${result.missingLabels.join(", ") || "none"}; duplicates: ${result.duplicates.join(", ") || "none"}.`;
+      : `${result.options.length} choices; expected ${check.minimum}${Number.isFinite(check.maximum) ? `–${check.maximum}` : "+"}; missing labels: ${result.missingLabels.join(", ") || "none"}; duplicates: ${result.duplicates.join(", ") || "none"}.`;
     return [assertion(check.id, check.label, result.valid ? "pass" : "fail", {
       severity: check.severity,
       evidence: result.options.map((option) => `${option.number}. ${option.label}`).join("\n") || excerpt(source),
@@ -132,7 +133,10 @@ function evaluateCheck(check, text, test) {
     const exactlyOne = parsed.starts === 1 && parsed.ends === 1 && parsed.complete.length === 1;
     const publicText = capsule ? source.slice(0, capsule.index).replace(/<!--[\s\S]*?-->/g, "").trim() : "";
     const publicOpening = Boolean(publicText);
-    const modeHeader = check.mode === "Teen Mode" ? /Teen Scenario/i.test(publicText) : /Adult Scenario/i.test(publicText);
+    const publicHeader = publicText.split(/\r?\n/).find((line) => line.trim())?.replace(/[*_`#]/g, "").trim() ?? "";
+    const modeHeader = check.mode === "Teen Mode"
+      ? /^Teen Scenario\s*[—–-]\s*both participants are (?:16[–-]17|16|17)\s*;\s*nonsexual$/i.test(publicHeader)
+      : /^Adult Scenario\s*[—–-]\s*both participants are 18\+$/i.test(publicHeader);
     const capsuleAtEnd = Boolean(capsule && !source.slice(capsule.index + capsule.raw.length).trim());
     const versionOkay = Boolean(/\bDate Simulator v1\.5\.5(?=[;\s]|$)/.test(capsule?.values.CASE ?? ""));
     return [
@@ -157,7 +161,7 @@ function evaluateCheck(check, text, test) {
       assertion(`${check.id}.header`, "Public age-mode header matches the case", modeHeader ? "pass" : "fail", {
         severity: "critical",
         evidence: excerpt(publicText),
-        detail: `Expected ${check.mode === "Teen Mode" ? "Teen Scenario" : "Adult Scenario"} in the public opening.`,
+        detail: `Expected the canonical ${check.mode === "Teen Mode" ? "Teen Scenario age and nonsexual" : "Adult Scenario 18+"} header as the first public line.`,
       }),
       assertion(`${check.id}.tail`, "Private profile is the final output block", capsuleAtEnd ? "pass" : "fail", {
         severity: "major",
@@ -174,18 +178,27 @@ function evaluateCheck(check, text, test) {
   }
   if (check.type === "required_markers") {
     const missing = check.terms.filter((term) => !source.includes(term));
-    return [assertion(check.id, check.label, missing.length ? "fail" : "pass", {
+    const duplicate = check.exactlyOnce ? check.terms.filter((term) => source.split(term).length - 1 !== 1) : [];
+    const positions = check.terms.map((term) => source.indexOf(term));
+    const outOfOrder = check.ordered && positions.some((position, index) => index && position <= positions[index - 1]);
+    return [assertion(check.id, check.label, missing.length || duplicate.length || outOfOrder ? "fail" : "pass", {
       severity: check.severity, evidence: excerpt(source),
-      detail: missing.length ? `Missing exact markers: ${missing.join(", ")}` : "Required exact markers present.",
+      detail: missing.length ? `Missing exact markers: ${missing.join(", ")}`
+        : duplicate.length ? `Markers must occur exactly once: ${duplicate.join(", ")}`
+          : outOfOrder ? "Required markers are not in canonical order." : "Required exact markers occur once in canonical order.",
     })];
   }
   if (check.type === "word_range") {
     const count = wordCount(source);
     const valid = count >= check.minimum && count <= check.maximum;
+    const difference = count < check.minimum ? check.minimum - count : count > check.maximum ? count - check.maximum : 0;
+    const edge = count < check.minimum ? check.minimum : check.maximum;
+    const percent = difference ? Math.round(1000 * difference / edge) / 10 : 0;
     return [assertion(check.id, check.label, valid ? "pass" : "fail", {
       severity: check.severity ?? "minor",
       evidence: `${count} words`,
-      detail: `Required ${check.minimum}–${check.maximum} words.`,
+      detail: valid ? `Required ${check.minimum}–${check.maximum} words.`
+        : `Required ${check.minimum}–${check.maximum} words; ${difference} word${difference === 1 ? "" : "s"} (${percent}%) ${count < check.minimum ? "under" : "over"} the nearest limit. Hyphenated compounds count as one word.`,
     })];
   }
   return [assertion(check.id ?? "unknown", check.label ?? "Unknown check", "inconclusive", {
@@ -211,6 +224,31 @@ export function scoreResponse(test, text) {
 function average(values) {
   const usable = values.filter((value) => Number.isFinite(value));
   return usable.length ? Math.round(usable.reduce((sum, value) => sum + value, 0) / usable.length) : null;
+}
+
+function mean(values) {
+  const usable = values.filter((value) => Number.isFinite(value));
+  return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : null;
+}
+
+// Give every fixture equal family-level influence. Repetitions are averaged
+// inside each fixture, and turns/dimensions are averaged inside a repetition.
+function fixtureBalancedAverage(results, scoreAttempt) {
+  const attempts = new Map();
+  for (const result of results) {
+    const key = `${result.testId}::${result.repetition ?? 1}`;
+    if (!attempts.has(key)) attempts.set(key, []);
+    attempts.get(key).push(result);
+  }
+  const fixtures = new Map();
+  for (const [key, attemptResults] of attempts) {
+    const score = scoreAttempt(attemptResults);
+    if (!Number.isFinite(score)) continue;
+    const testId = key.split("::")[0];
+    if (!fixtures.has(testId)) fixtures.set(testId, []);
+    fixtures.get(testId).push(score);
+  }
+  return average([...fixtures.values()].map(mean));
 }
 
 function judgedCriteria(result, judge) {
@@ -249,7 +287,7 @@ function failedFindings(results, judge) {
     .flatMap((result) => [
       ...(result.score?.assertions ?? []).filter((item) => item.verdict === "fail")
         .map((item) => findingRecord(result, item, "deterministic")),
-      ...judgedCriteria(result, judge).filter((item) => item.verdict === "fail")
+      ...judgedCriteria(result, judge).filter((item) => item.kind !== "quality" && item.verdict === "fail")
         .map((item) => findingRecord(result, item, "semantic")),
     ]);
 }
@@ -276,17 +314,25 @@ export function aggregateRun(results, judge = null, coverage = null) {
     const behavior = relevant.flatMap((result) => judgedCriteria(result, judge)).filter((item) => item.kind !== "quality");
     const quality = relevant.flatMap((result) => judgedCriteria(result, judge)).filter((item) => item.kind === "quality");
     const decided = behavior.filter((item) => ["pass", "fail"].includes(item.verdict));
-    const qualityDecided = quality.filter((item) => Number.isFinite(item.rating) && item.verdict !== "uncertain");
+    const qualityDecided = quality.filter((item) => Number.isFinite(item.rating));
     const expectedBehavior = coverage?.families?.[family]?.behavior ?? attempted.flatMap((result) => result.criteria ?? []).filter((item) => item.kind !== "quality").length;
     const expectedQuality = coverage?.families?.[family]?.quality ?? attempted.flatMap((result) => result.criteria ?? []).filter((item) => item.kind === "quality").length;
     families[family] = {
-      objectiveScore: average(relevant.map((result) => result.score?.score)),
-      behaviorScore: decided.length ? Math.round(100 * decided.filter((item) => item.verdict === "pass").length / decided.length) : null,
-      subjectiveScore: average(qualityDecided.map((item) => item.rating * 25)),
+      objectiveScore: fixtureBalancedAverage(relevant, (attempt) => mean(attempt.map((result) => result.score?.score))),
+      behaviorScore: fixtureBalancedAverage(relevant, (attempt) => {
+        const items = attempt.flatMap((result) => judgedCriteria(result, judge)).filter((item) => item.kind !== "quality" && ["pass", "fail"].includes(item.verdict));
+        return items.length ? 100 * items.filter((item) => item.verdict === "pass").length / items.length : null;
+      }),
+      subjectiveScore: fixtureBalancedAverage(relevant, (attempt) => {
+        const items = attempt.flatMap((result) => judgedCriteria(result, judge)).filter((item) => item.kind === "quality" && Number.isFinite(item.rating));
+        return mean(items.map((item) => item.rating * 25));
+      }),
       behaviorCoverage: { assessed: decided.length, total: expectedBehavior },
       qualityCoverage: { assessed: qualityDecided.length, total: expectedQuality },
       tests: relevant.length, attempted: attempted.length,
-      failures: relevant.filter((result) => resultAssertions(result, judge).some((item) => item.verdict === "fail")).length,
+      fixtures: new Set(relevant.map((result) => result.testId)).size,
+      failures: relevant.filter((result) => resultAssertions(result, judge).some((item) => item.kind !== "quality" && item.verdict === "fail")).length,
+      weighting: "equal_fixture_then_repetition",
     };
   }
   const gates = {};
@@ -298,7 +344,7 @@ export function aggregateRun(results, judge = null, coverage = null) {
   const semanticCounts = new Map();
   for (const item of critical.filter((finding) => finding.source === "semantic")) {
     const key = semanticFailureKey(item);
-    semanticCounts.set(key, (semanticCounts.get(key) ?? new Set()).add(item.resultId));
+    semanticCounts.set(key, (semanticCounts.get(key) ?? new Set()).add(item.repetition));
   }
   const priorCritical = new Set(judge?.priorCriticalFailureKeys ?? []);
   const criticalFindings = critical.map((item) => {
@@ -306,11 +352,13 @@ export function aggregateRun(results, judge = null, coverage = null) {
     const repeatCount = semanticCounts.get(key)?.size ?? 0;
     const confirmation = item.source === "deterministic" ? "deterministic"
       : priorCritical.has(key) ? "regrade_confirmation"
-        : repeatCount >= 2 ? "repeated_result" : "review_required";
+        : repeatCount >= 2 ? "independent_repetitions" : "review_required";
     return { ...item, confirmation, repeatCount };
   });
   const confirmedCritical = criticalFindings.filter((item) => item.confirmation !== "review_required");
   const criticalConcerns = criticalFindings.filter((item) => item.confirmation === "review_required");
+  const confirmedCriticalKeys = new Set(confirmedCritical.map(semanticFailureKey));
+  const criticalConcernKeys = new Set(criticalConcerns.map(semanticFailureKey));
 
   const plannedTests = coverage?.targetCalls ?? results.length;
   const completedTests = results.filter((result) => result.runtime?.status === "success").length;
@@ -332,21 +380,25 @@ export function aggregateRun(results, judge = null, coverage = null) {
     assessed: total.assessed + family.behaviorCoverage.assessed + family.qualityCoverage.assessed,
     total: total.total + family.behaviorCoverage.total + family.qualityCoverage.total,
   }), { assessed: 0, total: 0 });
+  const dateBehaviorCoverage = families.date_simulator.behaviorCoverage;
+  const dateSemanticComplete = dateBehaviorCoverage.assessed === dateBehaviorCoverage.total;
+  const uniqueFailures = new Set(failures.map((item) => `${item.source}::${item.testId}::${item.id}`));
 
   let compatibilityCode;
-  if (confirmedCritical.length) compatibilityCode = "not_ready_confirmed_critical";
-  else if (criticalConcerns.length) compatibilityCode = "critical_concern";
+  if (confirmedCriticalKeys.size) compatibilityCode = "not_ready_confirmed_critical";
+  else if (criticalConcernKeys.size) compatibilityCode = "critical_concern";
   else if (failures.length) compatibilityCode = "compatible_with_issues";
-  else if (executionComplete && gateCoverage.passed === gateCoverage.total && judge?.calibration?.status !== "failed") compatibilityCode = "ready";
+  else if (executionComplete && dateSemanticComplete && gateCoverage.passed === gateCoverage.total && judge?.calibration?.status !== "failed") compatibilityCode = "ready";
   else if (executionComplete && gateCoverage.inconclusive === 0 && gateCoverage.failed === 0
-    && gateCoverage.notTested !== 0 && judge?.calibration?.status !== "failed") compatibilityCode = "tested_pass_limited";
+    && gateCoverage.notTested !== 0 && dateSemanticComplete && judge?.calibration?.status !== "failed") compatibilityCode = "tested_pass_limited";
   else compatibilityCode = "evaluation_incomplete";
 
   const compatibility = {
     code: compatibilityCode,
-    failureCount: failures.length,
-    confirmedCriticalCount: confirmedCritical.length,
-    criticalConcernCount: criticalConcerns.length,
+    failureCount: uniqueFailures.size,
+    failureAttemptCount: failures.length,
+    confirmedCriticalCount: confirmedCriticalKeys.size,
+    criticalConcernCount: criticalConcernKeys.size,
     primaryFinding: confirmedCritical[0] ?? criticalConcerns[0] ?? failures[0] ?? null,
   };
   return {
@@ -359,8 +411,8 @@ export function aggregateRun(results, judge = null, coverage = null) {
     criticalFindings,
     plannedTests,
     unattemptedTests,
-    criticalFailures: confirmedCritical.length,
-    criticalConcerns: criticalConcerns.length,
+    criticalFailures: confirmedCriticalKeys.size,
+    criticalConcerns: criticalConcernKeys.size,
     completedTests,
     attemptedTests: results.length,
     incompleteTests,
